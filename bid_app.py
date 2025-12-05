@@ -13,7 +13,6 @@ def get_db_connection():
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
-    # Ensure this matches your Google Sheet name exactly
     sheet = client.open("Meridies_Event_Data").sheet1
     return sheet
 
@@ -28,7 +27,6 @@ def save_bid_to_sheet(event_name, group, event_type, bid_object):
     sheet = get_db_connection()
     init_db(sheet)
     
-    # Prepare Data
     bid_data = bid_object.to_dict()
     json_data = json.dumps(bid_data)
     
@@ -66,6 +64,8 @@ def load_bid_from_sheet(event_name, group):
 # ==========================================
 class EventBid:
     def __init__(self):
+        # Expenses now include 'category'
+        # Structure: {'Item Name': {'projected': 0.0, 'actual': 0.0, 'category': 'General'}}
         self.expenses = {} 
         self.event_type = "KINGDOM"
         
@@ -73,10 +73,24 @@ class EventBid:
         self.site_flat_fee = 0.0
         self.site_variable_cost = 0.0
         
+        # Site Amenities (New)
+        self.camping_allowed = False
+        self.fires_allowed = False
+        self.classrooms_small = 0
+        self.classrooms_med = 0
+        self.classrooms_large = 0
+        self.av_equipment = ""
+        
+        # Kitchen (New)
+        self.kitchen_size = "None"
+        self.kitchen_burners = 0
+        self.kitchen_ovens = 0
+        self.kitchen_amenities = [] # List of strings
+        
         # Gate Pricing
         self.ticket_weekend_member = 0.0
         self.ticket_daytrip_member = 0.0
-        self.nms_surcharge = 10.0 # Fixed as requested
+        self.nms_surcharge = 10.0
         
         # Feast
         self.feast_ticket_price = 0.0
@@ -93,6 +107,16 @@ class EventBid:
         return {
             'site_flat_fee': self.site_flat_fee,
             'site_variable_cost': self.site_variable_cost,
+            'camping_allowed': self.camping_allowed,
+            'fires_allowed': self.fires_allowed,
+            'classrooms_small': self.classrooms_small,
+            'classrooms_med': self.classrooms_med,
+            'classrooms_large': self.classrooms_large,
+            'av_equipment': self.av_equipment,
+            'kitchen_size': self.kitchen_size,
+            'kitchen_burners': self.kitchen_burners,
+            'kitchen_ovens': self.kitchen_ovens,
+            'kitchen_amenities': self.kitchen_amenities,
             'ticket_weekend_member': self.ticket_weekend_member,
             'ticket_daytrip_member': self.ticket_daytrip_member,
             'feast_ticket_price': self.feast_ticket_price,
@@ -108,6 +132,19 @@ class EventBid:
     def load_data(self, data):
         self.site_flat_fee = data.get('site_flat_fee', 0.0)
         self.site_variable_cost = data.get('site_variable_cost', 0.0)
+        
+        self.camping_allowed = data.get('camping_allowed', False)
+        self.fires_allowed = data.get('fires_allowed', False)
+        self.classrooms_small = data.get('classrooms_small', 0)
+        self.classrooms_med = data.get('classrooms_med', 0)
+        self.classrooms_large = data.get('classrooms_large', 0)
+        self.av_equipment = data.get('av_equipment', "")
+        
+        self.kitchen_size = data.get('kitchen_size', "None")
+        self.kitchen_burners = data.get('kitchen_burners', 0)
+        self.kitchen_ovens = data.get('kitchen_ovens', 0)
+        self.kitchen_amenities = data.get('kitchen_amenities', [])
+        
         self.ticket_weekend_member = data.get('ticket_weekend_member', 0.0)
         self.ticket_daytrip_member = data.get('ticket_daytrip_member', 0.0)
         self.feast_ticket_price = data.get('feast_ticket_price', 0.0)
@@ -124,53 +161,35 @@ class EventBid:
         return self.site_flat_fee + total_ops
 
     def calculate_bed_revenue(self, projected_occupancy_pct=1.0):
-        """Calculates revenue from beds based on a % sold assumption."""
         top_rev = (self.beds_top_qty * projected_occupancy_pct) * self.beds_top_price
         bot_rev = (self.beds_bot_qty * projected_occupancy_pct) * self.beds_bot_price
         return top_rev + bot_rev
 
     def calculate_gate_break_even(self):
-        """
-        Break even is calculated against the Weekend Member Price.
-        Any profit from beds reduces the fixed cost burden.
-        """
         margin = self.ticket_weekend_member - self.site_variable_cost
-        
-        # Bed revenue offsets fixed costs (assuming 100% sell out for break-even ideal)
-        # Or should we be conservative and say 0% beds? 
-        # Standard Bid Logic: Usually we check if Gate alone covers costs.
         fixed_total = self.get_total_fixed_costs(mode='projected')
-        
         if margin <= 0: return None 
         return math.ceil(fixed_total / margin)
 
     def generate_final_report(self, attend_weekend, attend_daytrip, feast_count, bed_sell_pct, mode='projected'):
         fixed_costs = self.get_total_fixed_costs(mode)
         
-        # 1. Gate Revenue (Excluding NMS)
-        # We assume for revenue projection that these inputs are Member equivalents 
-        # or that NMS is pass-through and ignored.
         rev_weekend = self.ticket_weekend_member * attend_weekend
         rev_daytrip = self.ticket_daytrip_member * attend_daytrip
         total_gate_revenue = rev_weekend + rev_daytrip
         
-        # 2. Gate Variable Expenses
         total_attendees = attend_weekend + attend_daytrip
         total_variable = self.site_variable_cost * total_attendees
         
         gate_net = total_gate_revenue - fixed_costs - total_variable
 
-        # 3. Feast Logic
         feast_revenue = self.feast_ticket_price * feast_count
         feast_expenses = self.food_cost_per_person * feast_count
         feast_net = feast_revenue - feast_expenses
 
-        # 4. Bed Logic
         bed_revenue = self.calculate_bed_revenue(bed_sell_pct)
-        # Assuming no specific variable cost per bed (laundry often in Ops budget)
         bed_net = bed_revenue 
 
-        # 5. Totals
         total_net = gate_net + feast_net + bed_net
         
         kingdom_share = 0.0
@@ -211,14 +230,17 @@ def main():
         input_group_name = st.text_input("Hosting Group")
         
         if st.button("Load Bid from Cloud"):
-            with st.spinner("Connecting..."):
-                etype, data = load_bid_from_sheet(input_event_name, input_group_name)
-                if data:
-                    st.session_state['loaded_data'] = data
-                    st.session_state['loaded_type'] = etype
-                    st.success("Bid Loaded!")
-                else:
-                    st.error("Bid not found.")
+            if not input_event_name or not input_group_name:
+                st.error("⚠️ Error: You must enter both an Event Name and Hosting Group to load.")
+            else:
+                with st.spinner("Connecting..."):
+                    etype, data = load_bid_from_sheet(input_event_name, input_group_name)
+                    if data:
+                        st.session_state['loaded_data'] = data
+                        st.session_state['loaded_type'] = etype
+                        st.success("Bid Loaded!")
+                    else:
+                        st.error("Bid not found. Check spelling or create a new one.")
 
     bid = EventBid()
     if 'loaded_data' in st.session_state:
@@ -234,101 +256,181 @@ def main():
     with col_type:
         bid.event_type = st.selectbox("Event Type", ["KINGDOM", "LOCAL"], index=default_type_index)
 
-    # 2. Gate Pricing
-    st.markdown("### 1. Gate Ticket Pricing")
+    # 2. Site Amenities Section
+    st.markdown("---")
+    st.subheader("1. Site Facilities & Rules")
+    
+    with st.expander("Kitchen & Dining Amenities", expanded=False):
+        k1, k2, k3 = st.columns(3)
+        bid.kitchen_size = k1.selectbox("Kitchen Size", ["None", "Small", "Medium", "Large", "Giant"], index=0)
+        bid.kitchen_burners = k2.number_input("Number of Burners/Gas Eyes", value=bid.kitchen_burners, min_value=0)
+        bid.kitchen_ovens = k3.number_input("Number of Ovens", value=bid.kitchen_ovens, min_value=0)
+        
+        st.markdown("**Available Equipment:**")
+        # Multiselect for amenities
+        available_opts = [
+            "Hobart Dishwasher", "Food Warmers", "Buffet Warming Table", 
+            "Utensils/Pots/Pans", "Ice Machine", "Walk-in Fridge", "Freezer"
+        ]
+        # Pre-select if loading data
+        default_opts = [x for x in bid.kitchen_amenities if x in available_opts]
+        bid.kitchen_amenities = st.multiselect("Select all that apply:", available_opts, default=default_opts)
+
+    with st.expander("Site Rules & Spaces", expanded=False):
+        r1, r2 = st.columns(2)
+        bid.camping_allowed = r1.checkbox("⛺ Camping Allowed?", value=bid.camping_allowed)
+        bid.fires_allowed = r2.checkbox("🔥 Ground Fires Allowed?", value=bid.fires_allowed)
+        
+        st.markdown("**Classrooms:**")
+        c1, c2, c3 = st.columns(3)
+        bid.classrooms_small = c1.number_input("Qty Small Classrooms", value=bid.classrooms_small, min_value=0)
+        bid.classrooms_med = c2.number_input("Qty Medium Classrooms", value=bid.classrooms_med, min_value=0)
+        bid.classrooms_large = c3.number_input("Qty Large Classrooms", value=bid.classrooms_large, min_value=0)
+        
+        bid.av_equipment = st.text_area("A/V Equipment Available", value=bid.av_equipment, placeholder="Projectors, Screens, PA Systems...")
+
+    # 3. Gate Pricing
+    st.markdown("---")
+    st.subheader("2. Gate Ticket Pricing")
     st.info(f"Note: The Non-Member Surcharge (NMS) is fixed at ${bid.nms_surcharge:.2f}. "
             "This calculator excludes NMS from profit calculations as it is a pass-through fee.")
     
     g1, g2, g3, g4 = st.columns(4)
-    bid.ticket_weekend_member = g1.number_input("Weekend Member Price ($)", value=bid.ticket_weekend_member)
-    bid.ticket_daytrip_member = g2.number_input("Daytrip Member Price ($)", value=bid.ticket_daytrip_member)
+    bid.ticket_weekend_member = g1.number_input("Weekend Member Price ($)", value=bid.ticket_weekend_member, min_value=0.0)
+    bid.ticket_daytrip_member = g2.number_input("Daytrip Member Price ($)", value=bid.ticket_daytrip_member, min_value=0.0)
     
-    # Display calculated Non-Member prices (Read Only)
     g3.metric("Weekend Non-Member", f"${bid.ticket_weekend_member + bid.nms_surcharge:.2f}")
     g4.metric("Daytrip Non-Member", f"${bid.ticket_daytrip_member + bid.nms_surcharge:.2f}")
 
-    # 3. Site & Variable Costs
+    # 4. Site Costs
     st.markdown("---")
-    st.markdown("### 2. Site Costs")
-    
+    st.subheader("3. Site Financials")
     sc1, sc2 = st.columns(2)
-    bid.site_flat_fee = sc1.number_input("Site Flat Rental Fee ($)", value=bid.site_flat_fee)
+    bid.site_flat_fee = sc1.number_input("Site Flat Rental Fee ($)", value=bid.site_flat_fee, min_value=0.0)
     bid.site_variable_cost = sc2.number_input(
         "Variable Cost Per Person Per Day ($)", 
         value=bid.site_variable_cost,
+        min_value=0.0,
         help="Leave as 0.00 unless the site charges a specific 'Head Tax' or per-person daily fee."
     )
 
-    # 4. Lodging / Cabins
+    # 5. Lodging / Cabins
     st.markdown("---")
-    st.markdown("### 3. Cabins & Lodging")
-    with st.expander("Configure Bunks (If Applicable)", expanded=True):
+    st.subheader("4. Cabins & Lodging")
+    with st.expander("Configure Bunks", expanded=False):
         b1, b2, b3, b4 = st.columns(4)
-        bid.beds_bot_qty = b1.number_input("Qty: Bottom Bunks", value=bid.beds_bot_qty, step=1)
-        bid.beds_bot_price = b2.number_input("Price: Bottom Bunk ($)", value=bid.beds_bot_price)
-        bid.beds_top_qty = b3.number_input("Qty: Top Bunks", value=bid.beds_top_qty, step=1)
-        bid.beds_top_price = b4.number_input("Price: Top Bunk ($)", value=bid.beds_top_price)
+        bid.beds_bot_qty = b1.number_input("Qty: Bottom Bunks", value=bid.beds_bot_qty, step=1, min_value=0)
+        bid.beds_bot_price = b2.number_input("Price: Bottom Bunk ($)", value=bid.beds_bot_price, min_value=0.0)
+        bid.beds_top_qty = b3.number_input("Qty: Top Bunks", value=bid.beds_top_qty, step=1, min_value=0)
+        bid.beds_top_price = b4.number_input("Price: Top Bunk ($)", value=bid.beds_top_price, min_value=0.0)
 
-    # 5. Operational Budget
+    # 6. Operational Budget
     st.markdown("---")
-    st.markdown("### 4. Operational Budget (Line Items)")
+    st.subheader("5. Operational Budget (Line Items)")
+    st.caption("Categorize expenses to track spending (e.g., Prizes, Decor, Site, Admin).")
     
+    # Prepare data for editor
     current_items = []
     for k, v in bid.expenses.items():
-        current_items.append({"Item": k, "Projected": v['projected'], "Actual": v['actual']})
+        # Handle backward compatibility if 'category' key is missing
+        cat = v.get('category', 'General')
+        current_items.append({
+            "Category": cat,
+            "Item": k, 
+            "Projected": v['projected'], 
+            "Actual": v['actual']
+        })
     
     if not current_items:
-        current_items = [{"Item": "Prizes", "Projected": 100.0, "Actual": 0.0}]
+        current_items = [{"Category": "Prizes", "Item": "Tournament Token", "Projected": 100.0, "Actual": 0.0}]
 
     df = pd.DataFrame(current_items)
-    edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+    
+    # Configure columns for the editor
+    column_config = {
+        "Category": st.column_config.SelectboxColumn(
+            "Category",
+            options=["Site", "Food", "Decor", "Prizes", "Admin", "Equipment", "Other"],
+            required=True
+        ),
+        "Item": st.column_config.TextColumn("Item Name", required=True),
+        "Projected": st.column_config.NumberColumn("Projected ($)", min_value=0.0, format="$%.2f"),
+        "Actual": st.column_config.NumberColumn("Actual ($)", min_value=0.0, format="$%.2f")
+    }
+    
+    edited_df = st.data_editor(
+        df, 
+        num_rows="dynamic", 
+        use_container_width=True,
+        column_config=column_config
+    )
 
+    # Save edited data back to object
     bid.expenses = {}
     for index, row in edited_df.iterrows():
         if row["Item"]:
+            proj = float(row["Projected"])
+            act = float(row["Actual"])
+            if proj < 0 or act < 0:
+                st.error(f"⚠️ Error in Line Item '{row['Item']}': Costs cannot be negative.")
+                st.stop()
+            
             bid.expenses[row["Item"]] = {
-                'projected': float(row["Projected"]), 
-                'actual': float(row["Actual"])
+                'projected': proj, 
+                'actual': act,
+                'category': row["Category"]
             }
 
-    # 6. Feast
+    # 7. Feast
     st.markdown("---")
-    st.markdown("### 5. Feast Details")
+    st.subheader("6. Feast Details")
     f1, f2, f3 = st.columns(3)
-    bid.feast_ticket_price = f1.number_input("Feast Ticket Price (Revenue) ($)", value=bid.feast_ticket_price)
-    bid.food_cost_per_person = f2.number_input("Food Cost Budget (Expense) ($)", value=bid.food_cost_per_person)
-    bid.feast_capacity = f3.number_input("Feast Hall Capacity", value=int(bid.feast_capacity), step=1)
+    bid.feast_ticket_price = f1.number_input("Feast Ticket Price (Revenue) ($)", value=bid.feast_ticket_price, min_value=0.0)
+    bid.food_cost_per_person = f2.number_input("Food Cost Budget (Expense) ($)", value=bid.food_cost_per_person, min_value=0.0)
+    bid.feast_capacity = f3.number_input("Feast Hall Capacity", value=int(bid.feast_capacity), step=1, min_value=0)
 
-    # 7. Projections
+    # 8. Projections
     st.markdown("---")
     st.subheader("📊 Financial Projections")
     
     c1, c2, c3, c4 = st.columns(4)
-    proj_weekend = c1.number_input("Projected Weekend Attendees", value=100, step=10)
-    proj_daytrip = c2.number_input("Projected Daytrip Attendees", value=20, step=5)
-    proj_feast = c3.number_input("Projected Feast Attendees", value=50, step=10)
+    proj_weekend = c1.number_input("Projected Weekend Attendees", value=100, step=10, min_value=0)
+    proj_daytrip = c2.number_input("Projected Daytrip Attendees", value=20, step=5, min_value=0)
+    proj_feast = c3.number_input("Projected Feast Attendees", value=50, step=10, min_value=0)
     proj_beds = c4.slider("Projected Bed Sales %", 0.0, 1.0, 0.5, format="%d%%")
     
     calc_mode = st.radio("Calculation Mode", ["Projected Budget", "Post-Event Actuals"], horizontal=True)
     mode_key = 'projected' if calc_mode == "Projected Budget" else 'actual'
 
     if st.button("Calculate Results", type="primary"):
-        res = bid.generate_final_report(proj_weekend, proj_daytrip, proj_feast, proj_beds, mode=mode_key)
+        # --- VALIDATION BLOCK ---
+        errors = []
+        if proj_feast > bid.feast_capacity:
+            errors.append(f"⚠️ Feast Error: You projected {proj_feast} attendees but the hall only holds {bid.feast_capacity}.")
         
-        st.markdown(f"### Net Profit: :green[${res['total_net']:.2f}]")
-        
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Break Even (Weekend Heads)", res['break_even'] if res['break_even'] else "Impossible")
-        m2.metric("Kingdom Share (50%)", f"${res['kingdom_share']:.2f}")
-        m3.metric("Group Share", f"${res['group_share']:.2f}")
-        m4.metric("Total Expenses", f"${res['total_expense']:.2f}")
+        if (bid.ticket_weekend_member <= bid.site_variable_cost) and bid.ticket_weekend_member > 0:
+            errors.append("⚠️ Pricing Error: Your Weekend Ticket Price is lower than the Variable Cost per person. You will lose money on every attendee.")
+            
+        if errors:
+            for e in errors:
+                st.error(e)
+        else:
+            res = bid.generate_final_report(proj_weekend, proj_daytrip, proj_feast, proj_beds, mode=mode_key)
+            
+            st.markdown(f"### Net Profit: :green[${res['total_net']:.2f}]")
+            
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Break Even (Weekend Heads)", res['break_even'] if res['break_even'] else "Impossible")
+            m2.metric("Kingdom Share (50%)", f"${res['kingdom_share']:.2f}")
+            m3.metric("Group Share", f"${res['group_share']:.2f}")
+            m4.metric("Total Expenses", f"${res['total_expense']:.2f}")
 
-        with st.expander("See Financial Breakdown"):
-            st.write(f"**Gate Net:** ${res['gate_net']:.2f}")
-            st.write(f"**Feast Net:** ${res['feast_net']:.2f}")
-            st.write(f"**Bed/Cabin Net:** ${res['bed_net']:.2f}")
-            if mode_key == 'actual':
-                st.info("Results based on ACTUALS column.")
+            with st.expander("See Financial Breakdown"):
+                st.write(f"**Gate Net:** ${res['gate_net']:.2f}")
+                st.write(f"**Feast Net:** ${res['feast_net']:.2f}")
+                st.write(f"**Bed/Cabin Net:** ${res['bed_net']:.2f}")
+                if mode_key == 'actual':
+                    st.info("Results based on ACTUALS column.")
 
     # Save
     st.markdown("---")
@@ -337,7 +439,7 @@ def main():
             with st.spinner("Saving data..."):
                 save_bid_to_sheet(input_event_name, input_group_name, bid.event_type, bid)
         else:
-            st.error("Enter Event Name and Group in Sidebar.")
+            st.error("⚠️ Error: Please enter an Event Name and Hosting Group in the Sidebar before saving.")
 
 if __name__ == "__main__":
     main()
