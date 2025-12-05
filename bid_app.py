@@ -10,7 +10,7 @@ from datetime import datetime, time
 # CONFIGURATION & ASSETS
 # ==========================================
 # Link to the Kingdom of Meridies Arms (Public URL)
-KINGDOM_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/2/25/Arms_of_the_Kingdom_of_Meridies.svg/200px-Arms_of_the_Kingdom_of_Meridies.svg.png"
+KINGDOM_LOGO_URL = "https://sca.org/awards/images/Meridies.png"
 
 # ==========================================
 # GOOGLE SHEETS DATABASE MANAGER
