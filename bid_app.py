@@ -4,6 +4,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import json
 import math
 import pandas as pd
+from datetime import datetime, time
 
 # ==========================================
 # GOOGLE SHEETS DATABASE MANAGER
@@ -64,8 +65,17 @@ def load_bid_from_sheet(event_name, group):
 # ==========================================
 class EventBid:
     def __init__(self):
-        # Expenses now include 'category'
-        # Structure: {'Item Name': {'projected': 0.0, 'actual': 0.0, 'category': 'General'}}
+        # Metadata
+        self.kingdom_event_name = "N/A"
+        self.start_date = None # Will store as string in JSON
+        self.gate_time = None  # Will store as string in JSON
+        self.is_single_day = False
+
+        # Staffing
+        self.event_stewards = ["", "", "", ""] 
+        self.feast_stewards = ["", "", ""]     
+
+        # Expenses
         self.expenses = {} 
         self.event_type = "KINGDOM"
         
@@ -73,7 +83,7 @@ class EventBid:
         self.site_flat_fee = 0.0
         self.site_variable_cost = 0.0
         
-        # Site Amenities (New)
+        # Site Amenities
         self.camping_allowed = False
         self.fires_allowed = False
         self.classrooms_small = 0
@@ -81,11 +91,11 @@ class EventBid:
         self.classrooms_large = 0
         self.av_equipment = ""
         
-        # Kitchen (New)
+        # Kitchen
         self.kitchen_size = "None"
         self.kitchen_burners = 0
         self.kitchen_ovens = 0
-        self.kitchen_amenities = [] # List of strings
+        self.kitchen_amenities = [] 
         
         # Gate Pricing
         self.ticket_weekend_member = 0.0
@@ -105,6 +115,12 @@ class EventBid:
 
     def to_dict(self):
         return {
+            'kingdom_event_name': self.kingdom_event_name,
+            'start_date': str(self.start_date) if self.start_date else None,
+            'gate_time': str(self.gate_time) if self.gate_time else None,
+            'is_single_day': self.is_single_day,
+            'event_stewards': self.event_stewards,
+            'feast_stewards': self.feast_stewards,
             'site_flat_fee': self.site_flat_fee,
             'site_variable_cost': self.site_variable_cost,
             'camping_allowed': self.camping_allowed,
@@ -130,6 +146,28 @@ class EventBid:
         }
 
     def load_data(self, data):
+        self.kingdom_event_name = data.get('kingdom_event_name', "N/A")
+        
+        # Handle Date/Time Parsing
+        d_str = data.get('start_date')
+        if d_str and d_str != 'None':
+            try:
+                self.start_date = datetime.strptime(d_str, "%Y-%m-%d").date()
+            except:
+                self.start_date = None
+        
+        t_str = data.get('gate_time')
+        if t_str and t_str != 'None':
+            try:
+                self.gate_time = datetime.strptime(t_str, "%H:%M:%S").time()
+            except:
+                self.gate_time = None
+                
+        self.is_single_day = data.get('is_single_day', False)
+
+        self.event_stewards = data.get('event_stewards', ["", "", "", ""])
+        self.feast_stewards = data.get('feast_stewards', ["", "", ""])
+        
         self.site_flat_fee = data.get('site_flat_fee', 0.0)
         self.site_variable_cost = data.get('site_variable_cost', 0.0)
         
@@ -251,14 +289,61 @@ def main():
 
     # --- Main Form ---
     
-    # 1. Event Type
-    col_type, col_pad = st.columns([1,3])
+    # 1. Event Type & Name
+    st.subheader("1. Event Information")
+    col_type, col_name = st.columns([1,2])
+    
     with col_type:
         bid.event_type = st.selectbox("Event Type", ["KINGDOM", "LOCAL"], index=default_type_index)
+        
+    with col_name:
+        if bid.event_type == "KINGDOM":
+            kle_options = [
+                "Fighters Collegium/War College",
+                "Meridian Challenge of Arms",
+                "Spring Coronation",
+                "Spring Crown/Kingdom A&S",
+                "Royal University of Meridies",
+                "Meridian Grand Tournament",
+                "Fall Coronation",
+                "Fall Crown List"
+            ]
+            try:
+                curr_index = kle_options.index(bid.kingdom_event_name)
+            except ValueError:
+                curr_index = 0
+            bid.kingdom_event_name = st.selectbox("Select Kingdom Event", kle_options, index=curr_index)
+        else:
+            st.info("Event Name will be saved as 'Local Event'.")
+            bid.kingdom_event_name = "Local Event"
+
+    # DATE & TIME SECTION
+    dt_col1, dt_col2, dt_col3 = st.columns(3)
+    bid.start_date = dt_col1.date_input("Event Start Date", value=bid.start_date)
+    bid.gate_time = dt_col2.time_input("Gate Open Time", value=bid.gate_time)
+    bid.is_single_day = dt_col3.checkbox("Is this a Single Day Event?", value=bid.is_single_day, help="Check if the event starts and ends on the same day.")
+
+    if bid.is_single_day:
+        st.success("ℹ️ **Single Day Event Mode:** 'Weekend' pricing will represent the 'Full Day' adult price.")
+
+    # STAFFING
+    st.markdown("---")
+    st.subheader("2. Event Staff")
+    staff_c1, staff_c2 = st.columns(2)
+    
+    with staff_c1:
+        st.markdown("**Event Stewards (Autocrats)**")
+        for i in range(4):
+            bid.event_stewards[i] = st.text_input(f"Event Steward #{i+1}", value=bid.event_stewards[i], key=f"evt_stwd_{i}")
+            
+    with staff_c2:
+        st.markdown("**Feast Stewards**")
+        for i in range(3):
+            bid.feast_stewards[i] = st.text_input(f"Feast Steward #{i+1}", value=bid.feast_stewards[i], key=f"fst_stwd_{i}")
 
     # 2. Site Amenities Section
     st.markdown("---")
-    st.subheader("1. Site Facilities & Rules")
+    st.subheader("3. Site Facilities & Rules")
     
     with st.expander("Kitchen & Dining Amenities", expanded=False):
         k1, k2, k3 = st.columns(3)
@@ -267,12 +352,10 @@ def main():
         bid.kitchen_ovens = k3.number_input("Number of Ovens", value=bid.kitchen_ovens, min_value=0)
         
         st.markdown("**Available Equipment:**")
-        # Multiselect for amenities
         available_opts = [
             "Hobart Dishwasher", "Food Warmers", "Buffet Warming Table", 
             "Utensils/Pots/Pans", "Ice Machine", "Walk-in Fridge", "Freezer"
         ]
-        # Pre-select if loading data
         default_opts = [x for x in bid.kitchen_amenities if x in available_opts]
         bid.kitchen_amenities = st.multiselect("Select all that apply:", available_opts, default=default_opts)
 
@@ -291,20 +374,23 @@ def main():
 
     # 3. Gate Pricing
     st.markdown("---")
-    st.subheader("2. Gate Ticket Pricing")
+    st.subheader("4. Gate Ticket Pricing")
     st.info(f"Note: The Non-Member Surcharge (NMS) is fixed at ${bid.nms_surcharge:.2f}. "
             "This calculator excludes NMS from profit calculations as it is a pass-through fee.")
     
     g1, g2, g3, g4 = st.columns(4)
-    bid.ticket_weekend_member = g1.number_input("Weekend Member Price ($)", value=bid.ticket_weekend_member, min_value=0.0)
-    bid.ticket_daytrip_member = g2.number_input("Daytrip Member Price ($)", value=bid.ticket_daytrip_member, min_value=0.0)
+    # Dynamic Label based on Single Day toggle
+    price_label = "Full Event (Weekend) Member Price ($)" if not bid.is_single_day else "Full Day Member Price ($)"
     
-    g3.metric("Weekend Non-Member", f"${bid.ticket_weekend_member + bid.nms_surcharge:.2f}")
-    g4.metric("Daytrip Non-Member", f"${bid.ticket_daytrip_member + bid.nms_surcharge:.2f}")
+    bid.ticket_weekend_member = g1.number_input(price_label, value=bid.ticket_weekend_member, min_value=0.0)
+    bid.ticket_daytrip_member = g2.number_input("Daytrip/Partial Member Price ($)", value=bid.ticket_daytrip_member, min_value=0.0)
+    
+    g3.metric("Non-Member Full Price", f"${bid.ticket_weekend_member + bid.nms_surcharge:.2f}")
+    g4.metric("Non-Member Partial Price", f"${bid.ticket_daytrip_member + bid.nms_surcharge:.2f}")
 
     # 4. Site Costs
     st.markdown("---")
-    st.subheader("3. Site Financials")
+    st.subheader("5. Site Financials")
     sc1, sc2 = st.columns(2)
     bid.site_flat_fee = sc1.number_input("Site Flat Rental Fee ($)", value=bid.site_flat_fee, min_value=0.0)
     bid.site_variable_cost = sc2.number_input(
@@ -316,7 +402,7 @@ def main():
 
     # 5. Lodging / Cabins
     st.markdown("---")
-    st.subheader("4. Cabins & Lodging")
+    st.subheader("6. Cabins & Lodging")
     with st.expander("Configure Bunks", expanded=False):
         b1, b2, b3, b4 = st.columns(4)
         bid.beds_bot_qty = b1.number_input("Qty: Bottom Bunks", value=bid.beds_bot_qty, step=1, min_value=0)
@@ -326,13 +412,11 @@ def main():
 
     # 6. Operational Budget
     st.markdown("---")
-    st.subheader("5. Operational Budget (Line Items)")
+    st.subheader("7. Operational Budget (Line Items)")
     st.caption("Categorize expenses to track spending (e.g., Prizes, Decor, Site, Admin).")
     
-    # Prepare data for editor
     current_items = []
     for k, v in bid.expenses.items():
-        # Handle backward compatibility if 'category' key is missing
         cat = v.get('category', 'General')
         current_items.append({
             "Category": cat,
@@ -346,7 +430,6 @@ def main():
 
     df = pd.DataFrame(current_items)
     
-    # Configure columns for the editor
     column_config = {
         "Category": st.column_config.SelectboxColumn(
             "Category",
@@ -365,7 +448,6 @@ def main():
         column_config=column_config
     )
 
-    # Save edited data back to object
     bid.expenses = {}
     for index, row in edited_df.iterrows():
         if row["Item"]:
@@ -383,7 +465,7 @@ def main():
 
     # 7. Feast
     st.markdown("---")
-    st.subheader("6. Feast Details")
+    st.subheader("8. Feast Details")
     f1, f2, f3 = st.columns(3)
     bid.feast_ticket_price = f1.number_input("Feast Ticket Price (Revenue) ($)", value=bid.feast_ticket_price, min_value=0.0)
     bid.food_cost_per_person = f2.number_input("Food Cost Budget (Expense) ($)", value=bid.food_cost_per_person, min_value=0.0)
@@ -394,8 +476,11 @@ def main():
     st.subheader("📊 Financial Projections")
     
     c1, c2, c3, c4 = st.columns(4)
-    proj_weekend = c1.number_input("Projected Weekend Attendees", value=100, step=10, min_value=0)
-    proj_daytrip = c2.number_input("Projected Daytrip Attendees", value=20, step=5, min_value=0)
+    # Dynamic Labels for projections
+    p_label_full = "Projected Full Event Attendees" if not bid.is_single_day else "Projected Full Day Attendees"
+    
+    proj_weekend = c1.number_input(p_label_full, value=100, step=10, min_value=0)
+    proj_daytrip = c2.number_input("Projected Partial/Daytrip Attendees", value=20, step=5, min_value=0)
     proj_feast = c3.number_input("Projected Feast Attendees", value=50, step=10, min_value=0)
     proj_beds = c4.slider("Projected Bed Sales %", 0.0, 1.0, 0.5, format="%d%%")
     
@@ -409,7 +494,7 @@ def main():
             errors.append(f"⚠️ Feast Error: You projected {proj_feast} attendees but the hall only holds {bid.feast_capacity}.")
         
         if (bid.ticket_weekend_member <= bid.site_variable_cost) and bid.ticket_weekend_member > 0:
-            errors.append("⚠️ Pricing Error: Your Weekend Ticket Price is lower than the Variable Cost per person. You will lose money on every attendee.")
+            errors.append("⚠️ Pricing Error: Your Ticket Price is lower than the Variable Cost per person. You will lose money on every attendee.")
             
         if errors:
             for e in errors:
@@ -420,7 +505,7 @@ def main():
             st.markdown(f"### Net Profit: :green[${res['total_net']:.2f}]")
             
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Break Even (Weekend Heads)", res['break_even'] if res['break_even'] else "Impossible")
+            m1.metric("Break Even (Full Price Heads)", res['break_even'] if res['break_even'] else "Impossible")
             m2.metric("Kingdom Share (50%)", f"${res['kingdom_share']:.2f}")
             m3.metric("Group Share", f"${res['group_share']:.2f}")
             m4.metric("Total Expenses", f"${res['total_expense']:.2f}")
