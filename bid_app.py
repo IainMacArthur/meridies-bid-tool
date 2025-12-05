@@ -1,70 +1,21 @@
 import streamlit as st
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 import json
 import math
 import pandas as pd
 from datetime import datetime, time
+import io
+
+# ReportLab imports for PDF generation
+from reportlab.lib.pagesizes import LETTER
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import inch
 
 # ==========================================
 # CONFIGURATION & ASSETS
 # ==========================================
-# Link to the Kingdom of Meridies Arms (Public URL)
 KINGDOM_LOGO_URL = "https://sca.org/awards/images/Meridies.png"
-
-# ==========================================
-# GOOGLE SHEETS DATABASE MANAGER
-# ==========================================
-def get_db_connection():
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    sheet = client.open("Meridies_Event_Data").sheet1
-    return sheet
-
-def init_db(sheet):
-    try:
-        if not sheet.acell('A1').value:
-            sheet.append_row(["Event Name", "Hosting Group", "Event Type", "Bid Data (JSON)"])
-    except:
-        pass 
-
-def save_bid_to_sheet(event_name, group, event_type, bid_object):
-    sheet = get_db_connection()
-    init_db(sheet)
-    
-    bid_data = bid_object.to_dict()
-    json_data = json.dumps(bid_data)
-    
-    records = sheet.get_all_records()
-    row_index = None
-    for idx, record in enumerate(records):
-        if record['Event Name'] == event_name and record['Hosting Group'] == group:
-            row_index = idx + 2 
-            break
-            
-    if row_index:
-        sheet.update_cell(row_index, 3, event_type)
-        sheet.update_cell(row_index, 4, json_data)
-        st.success(f"✅ Updated existing bid for {event_name}!")
-    else:
-        sheet.append_row([event_name, group, event_type, json_data])
-        st.success(f"✅ Created new bid for {event_name}!")
-
-def load_bid_from_sheet(event_name, group):
-    try:
-        sheet = get_db_connection()
-        records = sheet.get_all_records()
-        for record in records:
-            if record['Event Name'] == event_name and record['Hosting Group'] == group:
-                event_type = record['Event Type']
-                data = json.loads(record['Bid Data (JSON)'])
-                return event_type, data
-        return None, None
-    except Exception as e:
-        st.error(f"Connection Error: {e}")
-        return None, None
 
 # ==========================================
 # CORE LOGIC CLASS
@@ -98,7 +49,7 @@ class EventBid:
         self.classrooms_large = 0
         self.av_equipment = ""
         
-        # ADA Accessibility (New)
+        # ADA
         self.ada_ramps = False
         self.ada_parking = False
         self.ada_bathrooms = False
@@ -276,6 +227,129 @@ class EventBid:
         }
 
 # ==========================================
+# PDF GENERATION LOGIC
+# ==========================================
+def create_pdf(bid):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=LETTER, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
+    
+    styles = getSampleStyleSheet()
+    title_style = styles['Heading1']
+    h2_style = styles['Heading2']
+    h3_style = styles['Heading3']
+    normal_style = styles['Normal']
+    
+    elements = []
+    
+    # --- HEADER ---
+    elements.append(Paragraph("Kingdom of Meridies Event Bid", title_style))
+    elements.append(Spacer(1, 12))
+    
+    # Event Info Table
+    date_str = str(bid.start_date) if bid.start_date else "TBD"
+    time_str = str(bid.gate_time) if bid.gate_time else "TBD"
+    
+    data_info = [
+        ["Event Name:", bid.kingdom_event_name],
+        ["Type:", bid.event_type],
+        ["Date:", date_str],
+        ["Gate Opens:", time_str],
+        ["Duration:", "Single Day" if bid.is_single_day else "Weekend"]
+    ]
+    t_info = Table(data_info, colWidths=[100, 300])
+    t_info.setStyle(TableStyle([
+        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+    ]))
+    elements.append(t_info)
+    elements.append(Spacer(1, 12))
+
+    # --- STAFFING ---
+    elements.append(Paragraph("Staffing", h2_style))
+    autocrats = ", ".join([s for s in bid.event_stewards if s])
+    feastcrats = ", ".join([s for s in bid.feast_stewards if s])
+    
+    elements.append(Paragraph(f"<b>Event Stewards:</b> {autocrats if autocrats else 'None Listed'}", normal_style))
+    elements.append(Spacer(1, 6))
+    elements.append(Paragraph(f"<b>Feast Stewards:</b> {feastcrats if feastcrats else 'None Listed'}", normal_style))
+    elements.append(Spacer(1, 12))
+    
+    # --- FACILITIES ---
+    elements.append(Paragraph("Site Facilities & Rules", h2_style))
+    
+    # Facilities List
+    fac_data = [
+        ["Camping:", "Allowed" if bid.camping_allowed else "No"],
+        ["Ground Fires:", "Allowed" if bid.fires_allowed else "No"],
+        ["Alcohol:", bid.alcohol_policy],
+        ["Kitchen Size:", bid.kitchen_size],
+        ["Burners/Ovens:", f"{bid.kitchen_burners} Burners / {bid.kitchen_ovens} Ovens"],
+        ["Classrooms:", f"S:{bid.classrooms_small} / M:{bid.classrooms_med} / L:{bid.classrooms_large}"],
+        ["ADA Access:", f"{'Ramps ' if bid.ada_ramps else ''}{'Parking ' if bid.ada_parking else ''}{'Bathrooms ' if bid.ada_bathrooms else ''}"]
+    ]
+    t_fac = Table(fac_data, colWidths=[100, 300])
+    t_fac.setStyle(TableStyle([('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold')]))
+    elements.append(t_fac)
+    
+    if bid.kitchen_amenities:
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(f"<b>Kitchen Equip:</b> {', '.join(bid.kitchen_amenities)}", normal_style))
+        
+    elements.append(Spacer(1, 12))
+    
+    # --- PRICING ---
+    elements.append(Paragraph("Proposed Pricing", h2_style))
+    price_label = "Weekend Member" if not bid.is_single_day else "Full Day Member"
+    
+    price_data = [
+        ["Ticket Type", "Member Price", "Non-Member Price"],
+        [price_label, f"${bid.ticket_weekend_member:.2f}", f"${bid.ticket_weekend_member + bid.nms_surcharge:.2f}"],
+        ["Daytrip/Partial", f"${bid.ticket_daytrip_member:.2f}", f"${bid.ticket_daytrip_member + bid.nms_surcharge:.2f}"],
+        ["Feast Ticket", f"${bid.feast_ticket_price:.2f}", "-"],
+    ]
+    t_price = Table(price_data, colWidths=[150, 100, 120])
+    t_price.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('GRID', (0,0), (-1,-1), 1, colors.black),
+        ('ALIGN', (1,0), (-1,-1), 'CENTER'),
+    ]))
+    elements.append(t_price)
+    elements.append(Spacer(1, 12))
+    
+    # --- BUDGET & FINANCIALS ---
+    elements.append(Paragraph("Projected Budget Summary", h2_style))
+    
+    # Calculate stats for the PDF (assuming standard 100/50 projection for the report snapshot)
+    res = bid.generate_final_report(100, 20, 50, 0.5, mode='projected')
+    
+    fin_data = [
+        ["Category", "Amount"],
+        ["Site Costs (Fixed)", f"${bid.site_flat_fee:.2f}"],
+        ["Site Costs (Variable)", f"${bid.site_variable_cost:.2f} / person"],
+        ["Projected Expense Total", f"${res['total_expense']:.2f}"],
+        ["Projected Revenue Total", f"${res['total_revenue']:.2f}"],
+        ["NET PROFIT", f"${res['total_net']:.2f}"],
+        ["BREAK EVEN POINT", f"{res['break_even']} Attendees"]
+    ]
+    
+    t_fin = Table(fin_data, colWidths=[200, 150])
+    t_fin.setStyle(TableStyle([
+        ('FONTNAME', (0,-2), (-1,-1), 'Helvetica-Bold'), # Bold last two rows
+        ('LINEABOVE', (0,-2), (-1,-2), 1, colors.black),
+    ]))
+    elements.append(t_fin)
+    elements.append(Spacer(1, 12))
+    
+    if bid.event_type == "KINGDOM":
+        split_data = [["Kingdom Share (50%)", f"${res['kingdom_share']:.2f}"], ["Group Share (50%)", f"${res['group_share']:.2f}"]]
+        t_split = Table(split_data, colWidths=[200, 150])
+        elements.append(t_split)
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+# ==========================================
 # STREAMLIT GUI
 # ==========================================
 def main():
@@ -291,32 +365,28 @@ def main():
         st.image(KINGDOM_LOGO_URL, width=100)
     with col_title:
         st.title("Kingdom of Meridies Event Bidder")
+        st.caption("A free, private tool for event budgeting.")
     
-    # --- Sidebar ---
+    # --- Sidebar (Upload Logic) ---
     with st.sidebar:
-        st.header("📂 File Management")
-        input_event_name = st.text_input("Event Name")
-        input_group_name = st.text_input("Hosting Group")
+        st.header("📂 Save / Load Bid")
+        st.markdown("To save your work, scroll to the bottom and click **Download Bid (JSON)**.")
+        st.markdown("To resume work, upload your `.json` file here:")
         
-        if st.button("Load Bid from Cloud"):
-            if not input_event_name or not input_group_name:
-                st.error("⚠️ Error: You must enter both an Event Name and Hosting Group to load.")
-            else:
-                with st.spinner("Connecting..."):
-                    etype, data = load_bid_from_sheet(input_event_name, input_group_name)
-                    if data:
-                        st.session_state['loaded_data'] = data
-                        st.session_state['loaded_type'] = etype
-                        st.success("Bid Loaded!")
-                    else:
-                        st.error("Bid not found. Check spelling or create a new one.")
+        uploaded_file = st.file_uploader("Upload a Bid File", type=['json'])
 
+    # Initialize Bid Object
     bid = EventBid()
-    if 'loaded_data' in st.session_state:
-        bid.load_data(st.session_state['loaded_data'])
-        default_type_index = 0 if st.session_state['loaded_type'] == "KINGDOM" else 1
-    else:
-        default_type_index = 0
+    
+    # Check if a file was just uploaded
+    if uploaded_file is not None:
+        try:
+            # Read the file
+            data = json.load(uploaded_file)
+            bid.load_data(data)
+            st.sidebar.success("✅ Bid Loaded Successfully!")
+        except Exception as e:
+            st.sidebar.error(f"Error loading file: {e}")
 
     # --- Main Form ---
     
@@ -325,7 +395,7 @@ def main():
     col_type, col_name = st.columns([1,2])
     
     with col_type:
-        bid.event_type = st.selectbox("Event Type", ["KINGDOM", "LOCAL"], index=default_type_index)
+        bid.event_type = st.selectbox("Event Type", ["KINGDOM", "LOCAL"], index=0 if bid.event_type == "KINGDOM" else 1)
         
     with col_name:
         if bid.event_type == "KINGDOM":
@@ -345,8 +415,7 @@ def main():
                 curr_index = 0
             bid.kingdom_event_name = st.selectbox("Select Kingdom Event", kle_options, index=curr_index)
         else:
-            st.info("Event Name will be saved as 'Local Event'.")
-            bid.kingdom_event_name = "Local Event"
+            bid.kingdom_event_name = st.text_input("Event Name", value=bid.kingdom_event_name if bid.kingdom_event_name != "N/A" else "Local Event")
 
     # DATE & TIME SECTION
     dt_col1, dt_col2, dt_col3 = st.columns(3)
@@ -376,7 +445,7 @@ def main():
     st.markdown("---")
     st.subheader("3. Site Facilities & Rules")
     
-    # NEW: ADA ACCESSIBILITY
+    # ADA ACCESSIBILITY
     with st.expander("Accessibility (ADA)", expanded=True):
         st.caption("Select all that apply to this site:")
         ada_c1, ada_c2, ada_c3 = st.columns(3)
@@ -561,14 +630,36 @@ def main():
                 if mode_key == 'actual':
                     st.info("Results based on ACTUALS column.")
 
-    # Save
+    # --- SAVE TO FILE (JSON & PDF) ---
     st.markdown("---")
-    if st.button("Save to Google Sheet"):
-        if input_event_name and input_group_name:
-            with st.spinner("Saving data..."):
-                save_bid_to_sheet(input_event_name, input_group_name, bid.event_type, bid)
-        else:
-            st.error("⚠️ Error: Please enter an Event Name and Hosting Group in the Sidebar before saving.")
+    st.subheader("💾 Save & Submit")
+    st.caption("Use the JSON file to save your work and resume later. Use the PDF file to submit your bid.")
+    
+    col_save, col_pdf = st.columns(2)
+    
+    clean_name = bid.kingdom_event_name.replace(" ", "_").replace("/", "-")
+    date_str = str(bid.start_date) if bid.start_date else "NoDate"
+    
+    # JSON DOWNLOAD
+    with col_save:
+        bid_json = json.dumps(bid.to_dict(), indent=4)
+        st.download_button(
+            label="1. Download Save File (.json)",
+            data=bid_json,
+            file_name=f"Bid_SAVE_{clean_name}_{date_str}.json",
+            mime="application/json"
+        )
+        
+    # PDF DOWNLOAD
+    with col_pdf:
+        # Generate PDF Bytes
+        pdf_bytes = create_pdf(bid)
+        st.download_button(
+            label="2. Download Printable Bid (.pdf)",
+            data=pdf_bytes,
+            file_name=f"Bid_SUBMIT_{clean_name}_{date_str}.pdf",
+            mime="application/pdf"
+        )
 
 if __name__ == "__main__":
     main()
