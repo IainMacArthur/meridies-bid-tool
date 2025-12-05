@@ -7,6 +7,12 @@ import pandas as pd
 from datetime import datetime, time
 
 # ==========================================
+# CONFIGURATION & ASSETS
+# ==========================================
+# Link to the Kingdom of Meridies Arms (Public URL)
+KINGDOM_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/2/25/Arms_of_the_Kingdom_of_Meridies.svg/200px-Arms_of_the_Kingdom_of_Meridies.svg.png"
+
+# ==========================================
 # GOOGLE SHEETS DATABASE MANAGER
 # ==========================================
 def get_db_connection():
@@ -67,8 +73,8 @@ class EventBid:
     def __init__(self):
         # Metadata
         self.kingdom_event_name = "N/A"
-        self.start_date = None # Will store as string in JSON
-        self.gate_time = None  # Will store as string in JSON
+        self.start_date = None 
+        self.gate_time = None  
         self.is_single_day = False
 
         # Staffing
@@ -86,10 +92,16 @@ class EventBid:
         # Site Amenities
         self.camping_allowed = False
         self.fires_allowed = False
+        self.alcohol_policy = "Dry (no)" 
         self.classrooms_small = 0
         self.classrooms_med = 0
         self.classrooms_large = 0
         self.av_equipment = ""
+        
+        # ADA Accessibility (New)
+        self.ada_ramps = False
+        self.ada_parking = False
+        self.ada_bathrooms = False
         
         # Kitchen
         self.kitchen_size = "None"
@@ -125,10 +137,14 @@ class EventBid:
             'site_variable_cost': self.site_variable_cost,
             'camping_allowed': self.camping_allowed,
             'fires_allowed': self.fires_allowed,
+            'alcohol_policy': self.alcohol_policy,
             'classrooms_small': self.classrooms_small,
             'classrooms_med': self.classrooms_med,
             'classrooms_large': self.classrooms_large,
             'av_equipment': self.av_equipment,
+            'ada_ramps': self.ada_ramps,
+            'ada_parking': self.ada_parking,
+            'ada_bathrooms': self.ada_bathrooms,
             'kitchen_size': self.kitchen_size,
             'kitchen_burners': self.kitchen_burners,
             'kitchen_ovens': self.kitchen_ovens,
@@ -148,7 +164,6 @@ class EventBid:
     def load_data(self, data):
         self.kingdom_event_name = data.get('kingdom_event_name', "N/A")
         
-        # Handle Date/Time Parsing
         d_str = data.get('start_date')
         if d_str and d_str != 'None':
             try:
@@ -173,10 +188,17 @@ class EventBid:
         
         self.camping_allowed = data.get('camping_allowed', False)
         self.fires_allowed = data.get('fires_allowed', False)
+        self.alcohol_policy = data.get('alcohol_policy', "Dry (no)")
+
         self.classrooms_small = data.get('classrooms_small', 0)
         self.classrooms_med = data.get('classrooms_med', 0)
         self.classrooms_large = data.get('classrooms_large', 0)
         self.av_equipment = data.get('av_equipment', "")
+        
+        # ADA
+        self.ada_ramps = data.get('ada_ramps', False)
+        self.ada_parking = data.get('ada_parking', False)
+        self.ada_bathrooms = data.get('ada_bathrooms', False)
         
         self.kitchen_size = data.get('kitchen_size', "None")
         self.kitchen_burners = data.get('kitchen_burners', 0)
@@ -257,9 +279,18 @@ class EventBid:
 # STREAMLIT GUI
 # ==========================================
 def main():
-    st.set_page_config(page_title="Meridies Bid Calculator", layout="wide")
+    st.set_page_config(
+        page_title="Meridies Bid Calculator", 
+        layout="wide",
+        page_icon=KINGDOM_LOGO_URL
+    )
 
-    st.title("🛡️ Kingdom of Meridies Event Bidder")
+    # PAGE HEADER
+    col_logo, col_title = st.columns([1, 6])
+    with col_logo:
+        st.image(KINGDOM_LOGO_URL, width=100)
+    with col_title:
+        st.title("Kingdom of Meridies Event Bidder")
     
     # --- Sidebar ---
     with st.sidebar:
@@ -319,7 +350,7 @@ def main():
 
     # DATE & TIME SECTION
     dt_col1, dt_col2, dt_col3 = st.columns(3)
-    bid.start_date = dt_col1.date_input("Event Start Date", value=bid.start_date)
+    bid.start_date = dt_col1.date_input("Event Start Date", value=bid.start_date, format="MM/DD/YYYY")
     bid.gate_time = dt_col2.time_input("Gate Open Time", value=bid.gate_time)
     bid.is_single_day = dt_col3.checkbox("Is this a Single Day Event?", value=bid.is_single_day, help="Check if the event starts and ends on the same day.")
 
@@ -345,6 +376,14 @@ def main():
     st.markdown("---")
     st.subheader("3. Site Facilities & Rules")
     
+    # NEW: ADA ACCESSIBILITY
+    with st.expander("Accessibility (ADA)", expanded=True):
+        st.caption("Select all that apply to this site:")
+        ada_c1, ada_c2, ada_c3 = st.columns(3)
+        bid.ada_ramps = ada_c1.checkbox("♿ Ramps / Level Access", value=bid.ada_ramps)
+        bid.ada_parking = ada_c2.checkbox("🅿️ ADA Parking Available", value=bid.ada_parking)
+        bid.ada_bathrooms = ada_c3.checkbox("🚻 ADA Accessible Bathrooms", value=bid.ada_bathrooms)
+
     with st.expander("Kitchen & Dining Amenities", expanded=False):
         k1, k2, k3 = st.columns(3)
         bid.kitchen_size = k1.selectbox("Kitchen Size", ["None", "Small", "Medium", "Large", "Giant"], index=0)
@@ -360,9 +399,16 @@ def main():
         bid.kitchen_amenities = st.multiselect("Select all that apply:", available_opts, default=default_opts)
 
     with st.expander("Site Rules & Spaces", expanded=False):
-        r1, r2 = st.columns(2)
+        r1, r2, r3 = st.columns(3)
         bid.camping_allowed = r1.checkbox("⛺ Camping Allowed?", value=bid.camping_allowed)
         bid.fires_allowed = r2.checkbox("🔥 Ground Fires Allowed?", value=bid.fires_allowed)
+        
+        alcohol_opts = ["Dry (no)", "Wet (yes)", "Discreetly Wet (Yes, no original containers)"]
+        try:
+            alc_idx = alcohol_opts.index(bid.alcohol_policy)
+        except:
+            alc_idx = 0
+        bid.alcohol_policy = r3.selectbox("Alcohol Policy", alcohol_opts, index=alc_idx)
         
         st.markdown("**Classrooms:**")
         c1, c2, c3 = st.columns(3)
@@ -379,7 +425,6 @@ def main():
             "This calculator excludes NMS from profit calculations as it is a pass-through fee.")
     
     g1, g2, g3, g4 = st.columns(4)
-    # Dynamic Label based on Single Day toggle
     price_label = "Full Event (Weekend) Member Price ($)" if not bid.is_single_day else "Full Day Member Price ($)"
     
     bid.ticket_weekend_member = g1.number_input(price_label, value=bid.ticket_weekend_member, min_value=0.0)
@@ -476,7 +521,6 @@ def main():
     st.subheader("📊 Financial Projections")
     
     c1, c2, c3, c4 = st.columns(4)
-    # Dynamic Labels for projections
     p_label_full = "Projected Full Event Attendees" if not bid.is_single_day else "Projected Full Day Attendees"
     
     proj_weekend = c1.number_input(p_label_full, value=100, step=10, min_value=0)
