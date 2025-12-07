@@ -570,4 +570,8 @@ def main():
     
     json_str = json.dumps(bid.to_dict(), indent=4)
     ex2.download_button(
-        "💾 Download Save File (.json)",
+        "💾 Download Save File (.json)", 
+        json_str, 
+        f"bid_{bid.event_name.replace(' ', '_')}.json", 
+        "application/json"
+    )
