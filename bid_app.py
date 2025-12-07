@@ -110,7 +110,7 @@ class EventBid:
     
     ticket_weekend_member: float = 0.0
     ticket_daytrip_member: float = 0.0
-    nms_surcharge: float = 10.0  # Default $10 NMS
+    nms_surcharge: float = 10.0  # Default $10 NMS (pass-through)
     
     feast_fee: float = 0.0
     feast_cost_per_person: float = 0.0
@@ -134,14 +134,15 @@ class EventBid:
     def load_data(self, data_dict: dict):
         for key, value in data_dict.items():
             if hasattr(self, key):
-                if key in ["start_date", "end_date"] and isinstance(value, str):
-                    try: setattr(self, key, date.fromisoformat(value))
-                    except: pass
-                elif key in ["start_time", "end_time", "gate_time"] and isinstance(value, str):
-                    try: setattr(self, key, time.fromisoformat(value))
-                    except: pass
-                else:
-                    setattr(self, key, value)
+                try:
+                    if key in ["start_date", "end_date"] and isinstance(value, str):
+                        setattr(self, key, date.fromisoformat(value))
+                    elif key in ["start_time", "end_time", "gate_time"] and isinstance(value, str):
+                        setattr(self, key, time.fromisoformat(value))
+                    else:
+                        setattr(self, key, value)
+                except Exception as e:
+                    st.warning(f"Could not load field '{key}': {e}")
 
     def apply_site_profile(self, profile):
         if not profile: return
@@ -206,47 +207,82 @@ def export_to_pdf(bid: EventBid, projection: dict):
     styles = getSampleStyleSheet()
     elements = []
     
+    # Header
     elements.append(Paragraph("Kingdom of Meridies Event Bid", styles["Heading1"]))
     elements.append(Spacer(1, 12))
     
+    # Event Info
     elements.append(Paragraph(f"<b>Event:</b> {bid.event_name} ({bid.event_type})", styles["Normal"]))
+    elements.append(Paragraph(f"<b>Group:</b> {bid.group_name}", styles["Normal"]))
     elements.append(Paragraph(f"<b>Location:</b> {bid.site_name} - {bid.site_address}", styles["Normal"]))
+    elements.append(Paragraph(f"<b>Dates:</b> {bid.start_date} to {bid.end_date}", styles["Normal"]))
     elements.append(Spacer(1, 12))
     
+    # Site Features
+    elements.append(Paragraph("<b>Site Features</b>", styles["Heading3"]))
+    site_text = f"Parking: {bid.parking_spaces} spaces | Bathrooms: {bid.bathrooms_count}<br/>"
+    if bid.camping_allowed:
+        site_text += f"Camping: {bid.camping_tents} tent sites, {bid.camping_rv} RV sites<br/>"
+    site_text += f"ADA: {'Ramps, ' if bid.ada_ramps else ''}Parking ({bid.ada_parking_count}), Bathrooms ({bid.ada_bathroom_count})"
+    elements.append(Paragraph(site_text, styles["Normal"]))
+    elements.append(Spacer(1, 12))
+    
+    # Kitchen
     elements.append(Paragraph("<b>Kitchen Facilities</b>", styles["Heading3"]))
     k_text = f"Size: {bid.kitchen_size} ({bid.kitchen_sq_ft} sq ft)<br/>"
-    k_text += f"Equip: {bid.kitchen_stove_burners} Burners, {bid.kitchen_ovens} Ovens<br/>"
+    k_text += f"Equipment: {bid.kitchen_stove_burners} Burners, {bid.kitchen_ovens} Ovens<br/>"
     k_text += f"Prep: {bid.kitchen_3bay_sinks} Sinks, {bid.kitchen_prep_tables} Tables<br/>"
-    k_text += f"Household Cold: {bid.kitchen_fridge_household} Fridges, {bid.kitchen_freezer_household} Freezers"
+    k_text += f"Cold Storage: {bid.kitchen_fridge_household} Fridges, {bid.kitchen_freezer_household} Freezers"
     elements.append(Paragraph(k_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
     
+    # Pricing
     elements.append(Paragraph("<b>Gate Pricing</b>", styles["Heading3"]))
     p_text = f"Weekend Member: ${bid.ticket_weekend_member:.2f} (Non-Member: ${bid.ticket_weekend_member + bid.nms_surcharge:.2f})<br/>"
     p_text += f"Daytrip Member: ${bid.ticket_daytrip_member:.2f} (Non-Member: ${bid.ticket_daytrip_member + bid.nms_surcharge:.2f})<br/>"
-    p_text += f"NMS Surcharge: ${bid.nms_surcharge:.2f}"
+    p_text += f"NMS Surcharge: ${bid.nms_surcharge:.2f} (pass-through to SCA Inc.)"
     elements.append(Paragraph(p_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
 
-    elements.append(Paragraph("<b>Lodging Stats</b>", styles["Heading3"]))
-    l_text = f"Top Bunks: {bid.beds_top_qty} (${bid.beds_top_price:.2f})<br/>"
-    l_text += f"Bottom Bunks: {bid.beds_bot_qty} (${bid.beds_bot_price:.2f})"
+    # Lodging
+    elements.append(Paragraph("<b>Lodging</b>", styles["Heading3"]))
+    l_text = f"Top Bunks: {bid.beds_top_qty} available @ ${bid.beds_top_price:.2f} each<br/>"
+    l_text += f"Bottom Bunks: {bid.beds_bot_qty} available @ ${bid.beds_bot_price:.2f} each"
     elements.append(Paragraph(l_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
     
+    # Expenses
+    if bid.expenses:
+        elements.append(Paragraph("<b>Operational Expenses</b>", styles["Heading3"]))
+        exp_data = [["Item", "Projected", "Actual"]]
+        for name, vals in bid.expenses.items():
+            exp_data.append([name, f"${vals['projected']:.2f}", f"${vals['actual']:.2f}"])
+        exp_table = Table(exp_data, colWidths=[200, 100, 100])
+        exp_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('GRID', (0,0), (-1,-1), 1, colors.black),
+        ]))
+        elements.append(exp_table)
+        elements.append(Spacer(1, 12))
+    
+    # Financial Projection
     elements.append(Paragraph("<b>Financial Projection</b>", styles["Heading3"]))
     data = [
         ["Category", "Amount"],
         ["Total Revenue", f"${projection['total_revenue']:.2f}"],
         ["Total Expense", f"${projection['total_expense']:.2f}"],
+        ["Gate Net", f"${projection['gate_net']:.2f}"],
+        ["Feast Net", f"${projection['feast_net']:.2f}"],
+        ["Bed Net", f"${projection['bed_net']:.2f}"],
         ["NET PROFIT", f"${projection['total_net']:.2f}"],
-        ["Gate Break Even", f"{projection['break_even']} Attendees"]
+        ["Gate Break Even", f"{projection['break_even']} Weekend Attendees"]
     ]
     t = Table(data, colWidths=[200, 150])
     t.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('GRID', (0,0), (-1,-1), 1, colors.black),
         ('FONTNAME', (0,-2), (-1,-1), 'Helvetica-Bold'),
+        ('BACKGROUND', (0,-2), (-1,-1), colors.yellow),
     ]))
     elements.append(t)
     
@@ -273,49 +309,93 @@ def main():
     # --- Sidebar ---
     with st.sidebar:
         st.header("📂 Actions")
+        
+        # Load Site
         site_choice = st.selectbox("Load Known Site", list(SITE_DATABASE.keys()))
         if site_choice != "Select a Site...":
             if st.button("Load Site Data"):
                 bid.apply_site_profile(SITE_DATABASE[site_choice])
+                bid.site_name = site_choice  # FIX: Set the site name explicitly
                 st.success(f"Loaded {site_choice}")
+                st.rerun()
         
         st.divider()
+        
+        # Upload JSON
         uploaded = st.file_uploader("Upload Bid JSON", type="json")
         if uploaded:
             data = json.load(uploaded)
             bid.load_data(data)
             st.success("Bid JSON Loaded")
+            st.rerun()
+        
+        st.divider()
+        
+        # Reset Form
+        if st.button("🔄 Reset Form", type="secondary"):
+            st.session_state.bid = EventBid()
+            st.success("Form reset!")
+            st.rerun()
 
     # --- MAIN FORM ---
     
     # 1. Event Info
     st.subheader("1. Event Details")
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     bid.event_name = c1.text_input("Event Name", bid.event_name)
-    bid.event_type = c2.selectbox("Type", ["Local", "Kingdom"], index=0 if bid.event_type=="Local" else 1)
+    bid.group_name = c2.text_input("Group/Branch Name", bid.group_name)
+    event_type_idx = 0 if bid.event_type == "Local" else 1
+    bid.event_type = c3.selectbox("Type", ["Local", "Kingdom"], index=event_type_idx)
     
     d1, d2, d3 = st.columns(3)
     bid.start_date = d1.date_input("Start Date", bid.start_date)
     bid.end_date = d2.date_input("End Date", bid.end_date)
     bid.is_single_day = d3.checkbox("Single Day Event?", bid.is_single_day)
+    
+    # Validation: Date order
+    if bid.end_date < bid.start_date:
+        st.warning("⚠️ End date is before start date!")
 
-    # 2. Staff
-    st.subheader("2. Staffing")
-    s1, s2 = st.columns(2)
-    with s1:
-        st.caption("Event Stewards")
-        for i in range(2): bid.event_stewards[i] = st.text_input(f"Autocrat {i+1}", bid.event_stewards[i], key=f"es{i}")
-    with s2:
-        st.caption("Feast Stewards")
-        for i in range(2): bid.feast_stewards[i] = st.text_input(f"Feastcrat {i+1}", bid.feast_stewards[i], key=f"fs{i}")
-
-    # 3. Facilities
+    # Site Location
     st.markdown("---")
-    st.subheader("3. Site Facilities")
+    st.subheader("2. Site Information")
+    s1, s2 = st.columns(2)
+    bid.site_name = s1.text_input("Site Name", bid.site_name)
+    bid.site_address = s2.text_input("Site Address", bid.site_address)
+    
+    s3, s4 = st.columns(2)
+    bid.parking_spaces = s3.number_input("Parking Spaces", value=bid.parking_spaces, step=5)
+    bid.bathrooms_count = s4.number_input("Bathrooms", value=bid.bathrooms_count, step=1)
+
+    # 3. Staff
+    st.markdown("---")
+    st.subheader("3. Staffing")
+    st1, st2 = st.columns(2)
+    with st1:
+        st.caption("Event Stewards")
+        for i in range(2): 
+            bid.event_stewards[i] = st.text_input(f"Autocrat {i+1}", bid.event_stewards[i], key=f"es{i}")
+    with st2:
+        st.caption("Feast Stewards")
+        for i in range(2): 
+            bid.feast_stewards[i] = st.text_input(f"Feastcrat {i+1}", bid.feast_stewards[i], key=f"fs{i}")
+
+    # 4. Facilities
+    st.markdown("---")
+    st.subheader("4. Site Facilities")
+    
+    with st.expander("Camping & Lodging", expanded=False):
+        camp1, camp2, camp3 = st.columns(3)
+        bid.camping_allowed = camp1.checkbox("Camping Allowed", bid.camping_allowed)
+        if bid.camping_allowed:
+            bid.camping_tents = camp2.number_input("Tent Sites", value=bid.camping_tents, step=5)
+            bid.camping_rv = camp3.number_input("RV Sites", value=bid.camping_rv, step=1)
     
     with st.expander("Kitchen Specs", expanded=True):
         k1, k2, k3, k4 = st.columns(4)
-        bid.kitchen_size = k1.selectbox("Kitchen Size", ["None", "Small", "Medium", "Large"], index=0)
+        kitchen_sizes = ["None", "Small", "Medium", "Large"]
+        kitchen_idx = kitchen_sizes.index(bid.kitchen_size) if bid.kitchen_size in kitchen_sizes else 0
+        bid.kitchen_size = k1.selectbox("Kitchen Size", kitchen_sizes, index=kitchen_idx)
         bid.kitchen_sq_ft = k2.number_input("Sq Ft", value=bid.kitchen_sq_ft, step=10)
         bid.kitchen_stove_burners = k3.number_input("Burners", value=bid.kitchen_stove_burners, step=1)
         bid.kitchen_ovens = k4.number_input("Ovens", value=bid.kitchen_ovens, step=1)
@@ -340,17 +420,19 @@ def main():
         bid.ada_parking_count = a4.number_input("Count of ADA Spots", value=bid.ada_parking_count, step=1)
         bid.ada_bathroom_count = a5.number_input("Count of ADA Stalls", value=bid.ada_bathroom_count, step=1)
 
-    # 4. Financials
+    # 5. Financials
     st.markdown("---")
-    st.subheader("4. Financials")
+    st.subheader("5. Financials")
     
     # ROW 1: Site and NMS
     f1, f2, f3 = st.columns(3)
     bid.site_fee = f1.number_input("Site Rental Fee (Fixed)", value=bid.site_fee, min_value=0.0, step=10.0)
     bid.site_variable_cost = f2.number_input("Per Person Site Cost", value=bid.site_variable_cost, min_value=0.0, step=0.5)
-    bid.nms_surcharge = f3.number_input("Non-Member Surcharge (NMS)", value=bid.nms_surcharge, min_value=0.0, step=1.0)
+    bid.nms_surcharge = f3.number_input("Non-Member Surcharge (NMS)", value=bid.nms_surcharge, min_value=0.0, step=1.0, 
+                                        help="Pass-through fee to SCA Inc. - does not affect event budget")
 
     # ROW 2: Gate Prices with NMS Calc
+    st.caption("Gate Pricing (Member rates used for break-even calculations)")
     gp1, gp2, gp3, gp4 = st.columns(4)
     bid.ticket_weekend_member = gp1.number_input("Adult Member Price", value=bid.ticket_weekend_member, min_value=0.0, step=1.0)
     gp2.metric("Adult Non-Member", f"${bid.ticket_weekend_member + bid.nms_surcharge:.2f}")
@@ -358,11 +440,11 @@ def main():
     bid.ticket_daytrip_member = gp3.number_input("Daytrip Member Price", value=bid.ticket_daytrip_member, min_value=0.0, step=1.0)
     gp4.metric("Daytrip Non-Member", f"${bid.ticket_daytrip_member + bid.nms_surcharge:.2f}")
     
-    st.caption("Feast & Beds (Siloed Costs)")
+    st.caption("Feast & Beds (Siloed Budgets)")
     fb1, fb2, fb3 = st.columns(3)
     bid.feast_fee = fb1.number_input("Feast Ticket Price", value=bid.feast_fee, min_value=0.0, step=1.0)
     bid.feast_cost_per_person = fb2.number_input("Feast Food Cost", value=bid.feast_cost_per_person, min_value=0.0, step=0.5)
-    bid.feast_capacity = fb3.number_input("Feast Max Cap.", value=bid.feast_capacity, step=1)
+    bid.feast_capacity = fb3.number_input("Feast Max Capacity", value=bid.feast_capacity, step=1)
     
     # BEDS UI
     st.write("**Cabin / Lodging Configuration**")
@@ -372,72 +454,120 @@ def main():
     bid.beds_bot_qty = b3.number_input("Qty: Bottom Bunks", value=bid.beds_bot_qty, step=1)
     bid.beds_bot_price = b4.number_input("Price: Bottom ($)", value=bid.beds_bot_price, min_value=0.0, step=1.0)
 
-    # 5. Expenses
+    # 6. Expenses
     st.markdown("---")
-    st.subheader("5. Operational Expenses")
+    st.subheader("6. Operational Expenses")
+    
+    # Add new expense
     e_col1, e_col2, e_col3 = st.columns([2, 1, 1])
-    new_exp_name = e_col1.text_input("New Expense Item")
-    new_exp_cost = e_col2.number_input("Cost", 0.0, step=10.0)
-    if e_col3.button("Add"):
+    new_exp_name = e_col1.text_input("New Expense Item", key="new_exp_name")
+    new_exp_cost = e_col2.number_input("Cost", 0.0, step=10.0, key="new_exp_cost")
+    if e_col3.button("➕ Add Expense"):
         if new_exp_name:
             bid.expenses[new_exp_name] = {"projected": new_exp_cost, "actual": 0.0}
+            st.success(f"Added: {new_exp_name}")
+            st.rerun()
     
+    # Display and manage existing expenses
     if bid.expenses:
-        st.write(bid.expenses)
+        st.caption("Current Expenses")
+        for exp_name in list(bid.expenses.keys()):
+            exp_cols = st.columns([3, 2, 2, 1])
+            exp_cols[0].text(exp_name)
+            
+            # Update projected/actual values
+            new_proj = exp_cols[1].number_input(
+                "Projected", 
+                value=bid.expenses[exp_name]["projected"], 
+                step=10.0, 
+                key=f"proj_{exp_name}",
+                label_visibility="collapsed"
+            )
+            new_actual = exp_cols[2].number_input(
+                "Actual", 
+                value=bid.expenses[exp_name]["actual"], 
+                step=10.0, 
+                key=f"actual_{exp_name}",
+                label_visibility="collapsed"
+            )
+            
+            # Update values if changed
+            bid.expenses[exp_name]["projected"] = new_proj
+            bid.expenses[exp_name]["actual"] = new_actual
+            
+            # Delete button
+            if exp_cols[3].button("🗑️", key=f"del_{exp_name}"):
+                del bid.expenses[exp_name]
+                st.rerun()
+    else:
+        st.info("No expenses added yet. Add operational costs like insurance, supplies, etc.")
 
-    # 6. Results
+    # 7. Projections
     st.markdown("---")
-    st.subheader("📊 Projections")
+    st.subheader("📊 Financial Projections")
     
     p1, p2, p3 = st.columns(3)
-    proj_wk = p1.number_input("Proj. Weekend Heads", value=100, step=10)
-    proj_dt = p2.number_input("Proj. Daytrip Heads", value=20, step=5)
-    proj_fst = p3.number_input("Proj. Feast Eaters", value=50, step=5)
+    proj_wk = p1.number_input("Projected Weekend Attendees", value=100, step=10)
+    proj_dt = p2.number_input("Projected Daytrip Attendees", value=20, step=5)
+    proj_fst = p3.number_input("Projected Feast Eaters", value=50, step=5)
+    
+    # Validation: Feast capacity
+    if proj_fst > bid.feast_capacity and bid.feast_capacity > 0:
+        st.warning(f"⚠️ Feast projections ({proj_fst}) exceed capacity ({bid.feast_capacity})!")
     
     p4, p5 = st.columns(2)
-    sold_top = p4.number_input(f"Proj. Top Beds Sold (Max {bid.beds_top_qty})", value=0, max_value=bid.beds_top_qty, step=1)
-    sold_bot = p5.number_input(f"Proj. Bot Beds Sold (Max {bid.beds_bot_qty})", value=0, max_value=bid.beds_bot_qty, step=1)
+    sold_top = p4.number_input(
+        f"Projected Top Beds Sold (Max: {bid.beds_top_qty})", 
+        value=0, 
+        max_value=bid.beds_top_qty, 
+        step=1
+    )
+    sold_bot = p5.number_input(
+        f"Projected Bottom Beds Sold (Max: {bid.beds_bot_qty})", 
+        value=0, 
+        max_value=bid.beds_bot_qty, 
+        step=1
+    )
     
     results = bid.calculate_projection(proj_wk, proj_dt, proj_fst, sold_top, sold_bot)
     
+    # Display results with color coding
     r1, r2, r3 = st.columns(3)
-    r1.metric("Net Profit", f"${results['total_net']:.2f}")
-    r2.metric("Break Even (Gate)", results['break_even'])
+    
+    net_profit = results['total_net']
+    if net_profit < 0:
+        r1.metric("Net Profit", f"${net_profit:.2f}", delta="Loss", delta_color="inverse")
+    else:
+        r1.metric("Net Profit", f"${net_profit:.2f}", delta="Profit")
+    
+    r2.metric("Gate Break Even", f"{results['break_even']} attendees", 
+              help="Weekend attendees needed to cover fixed costs (excl. feast/beds)")
     r3.metric("Total Expenses", f"${results['total_expense']:.2f}")
     
     with st.expander("Detailed Financial Breakdown"):
+        detail_cols = st.columns(3)
+        detail_cols[0].metric("Gate Net", f"${results['gate_net']:.2f}")
+        detail_cols[1].metric("Feast Net", f"${results['feast_net']:.2f}")
+        detail_cols[2].metric("Bed Net", f"${results['bed_net']:.2f}")
+        
         st.json(results)
 
-    # 7. Exports
+    # 8. Exports
     st.markdown("---")
     st.subheader("💾 Save & Submit")
     ex1, ex2 = st.columns(2)
     
-    pdf_bytes = export_to_pdf(bid, results)
-    ex1.download_button("Download PDF Report", pdf_bytes, "bid_report.pdf", "application/pdf")
+    try:
+        pdf_bytes = export_to_pdf(bid, results)
+        ex1.download_button(
+            "📄 Download PDF Report", 
+            pdf_bytes, 
+            f"bid_{bid.event_name.replace(' ', '_')}.pdf", 
+            "application/pdf"
+        )
+    except Exception as e:
+        ex1.error(f"PDF generation failed: {e}")
     
     json_str = json.dumps(bid.to_dict(), indent=4)
-    ex2.download_button("Download Save File (.json)", json_str, "bid_save.json", "application/json")
-
-    # --- ADMIN EXPORT ---
-    with st.expander("👑 Admin: Export Site for Database"):
-        st.info("Copy the code below to add this site to 'SITE_DATABASE' at the top of the script.")
-        
-        # Filter for just site attributes
-        site_export = {k:v for k,v in bid.__dict__.items() if k in [
-            "site_name", "site_address", "parking_spaces", "bathrooms_count",
-            "camping_allowed", "camping_tents", "camping_rv",
-            "kitchen_size", "kitchen_sq_ft", "kitchen_stove_burners",
-            "kitchen_ovens", "kitchen_3bay_sinks", "kitchen_prep_tables",
-            "kitchen_garbage_cans", "kitchen_fridge_household", "kitchen_freezer_household",
-            "ada_ramps", "ada_parking", "ada_parking_count", "ada_bathrooms",
-            "ada_bathroom_count", "site_fee", 
-            "beds_top_qty", "beds_top_price", "beds_bot_qty", "beds_bot_price"
-        ]}
-        
-        key_name = st.text_input("Database Key Name", "New Site")
-        code_str = json.dumps(site_export, indent=4).replace("true", "True").replace("false", "False")
-        st.code(f'"{key_name}": {code_str},', language="python")
-
-if __name__ == "__main__":
-    main()
+    ex2.download_button(
+        "💾 Download Save File (.json)",
