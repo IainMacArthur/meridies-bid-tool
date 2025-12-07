@@ -110,7 +110,7 @@ class EventBid:
     
     ticket_weekend_member: float = 0.0
     ticket_daytrip_member: float = 0.0
-    nms_surcharge: float = 10.0
+    nms_surcharge: float = 10.0  # Default $10 NMS
     
     feast_fee: float = 0.0
     feast_cost_per_person: float = 0.0
@@ -221,6 +221,13 @@ def export_to_pdf(bid: EventBid, projection: dict):
     elements.append(Paragraph(k_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
     
+    elements.append(Paragraph("<b>Gate Pricing</b>", styles["Heading3"]))
+    p_text = f"Weekend Member: ${bid.ticket_weekend_member:.2f} (Non-Member: ${bid.ticket_weekend_member + bid.nms_surcharge:.2f})<br/>"
+    p_text += f"Daytrip Member: ${bid.ticket_daytrip_member:.2f} (Non-Member: ${bid.ticket_daytrip_member + bid.nms_surcharge:.2f})<br/>"
+    p_text += f"NMS Surcharge: ${bid.nms_surcharge:.2f}"
+    elements.append(Paragraph(p_text, styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
     elements.append(Paragraph("<b>Lodging Stats</b>", styles["Heading3"]))
     l_text = f"Top Bunks: {bid.beds_top_qty} (${bid.beds_top_price:.2f})<br/>"
     l_text += f"Bottom Bunks: {bid.beds_bot_qty} (${bid.beds_bot_price:.2f})"
@@ -337,11 +344,19 @@ def main():
     st.markdown("---")
     st.subheader("4. Financials")
     
-    f1, f2, f3, f4 = st.columns(4)
+    # ROW 1: Site and NMS
+    f1, f2, f3 = st.columns(3)
     bid.site_fee = f1.number_input("Site Rental Fee (Fixed)", value=bid.site_fee, min_value=0.0, step=10.0)
     bid.site_variable_cost = f2.number_input("Per Person Site Cost", value=bid.site_variable_cost, min_value=0.0, step=0.5)
-    bid.ticket_weekend_member = f3.number_input("Adult Member Price", value=bid.ticket_weekend_member, min_value=0.0, step=1.0)
-    bid.ticket_daytrip_member = f4.number_input("Daytrip Member Price", value=bid.ticket_daytrip_member, min_value=0.0, step=1.0)
+    bid.nms_surcharge = f3.number_input("Non-Member Surcharge (NMS)", value=bid.nms_surcharge, min_value=0.0, step=1.0)
+
+    # ROW 2: Gate Prices with NMS Calc
+    gp1, gp2, gp3, gp4 = st.columns(4)
+    bid.ticket_weekend_member = gp1.number_input("Adult Member Price", value=bid.ticket_weekend_member, min_value=0.0, step=1.0)
+    gp2.metric("Adult Non-Member", f"${bid.ticket_weekend_member + bid.nms_surcharge:.2f}")
+    
+    bid.ticket_daytrip_member = gp3.number_input("Daytrip Member Price", value=bid.ticket_daytrip_member, min_value=0.0, step=1.0)
+    gp4.metric("Daytrip Non-Member", f"${bid.ticket_daytrip_member + bid.nms_surcharge:.2f}")
     
     st.caption("Feast & Beds (Siloed Costs)")
     fb1, fb2, fb3 = st.columns(3)
