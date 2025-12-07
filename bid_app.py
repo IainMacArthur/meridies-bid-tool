@@ -49,7 +49,37 @@ KNOWN_SITES = {
         "ada_bathroom_count": 2,
         "beds_bot_qty": 40,
         "beds_top_qty": 40
-    }
+    },"Test Site": {
+    "site_flat_fee": 1200.0,
+    "site_variable_cost": 0.0,
+    "camping_allowed": false,
+    "fires_allowed": false,
+    "alcohol_policy": "Dry (no)",
+    "kitchen_size": "Medium",
+    "kitchen_sq_ft": 0,
+    "kitchen_burners": 8,
+    "kitchen_ovens": 2,
+    "kitchen_3bay_sinks": 1,
+    "kitchen_prep_tables": 2,
+    "kitchen_garbage_cans": 3,
+    "kitchen_fridge_household": 1,
+    "kitchen_freezer_household": 1,
+    "kitchen_amenities": [
+        "Hobart Dishwasher",
+        "Ice Machine",
+        "Walk-in Fridge"
+    ],
+    "classrooms_small": 0,
+    "classrooms_med": 0,
+    "classrooms_large": 0,
+    "ada_ramps": true,
+    "ada_parking": true,
+    "ada_parking_count": 4,
+    "ada_bathrooms": true,
+    "ada_bathroom_count": 2,
+    "beds_bot_qty": 0,
+    "beds_top_qty": 0
+},
 }
 
 # ==========================================
