@@ -18,14 +18,15 @@ from reportlab.lib import colors
 # CONFIGURATION
 # ==========================================
 KINGDOM_LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQMZ0z9WhWg9G_roekRq7BHmd08icwmjOl6Qg&s"
-ADMIN_PASSWORD = "Meridies2024"  # CHANGE THIS to your desired password
 
 # ==========================================
 # MYSQL DATABASE FUNCTIONS
 # ==========================================
 def get_db_connection():
+    """
+    Establishes a connection to the MySQL database using credentials from .streamlit/secrets.toml
+    """
     try:
-        # Requires .streamlit/secrets.toml file
         return mysql.connector.connect(
             host=st.secrets["mysql"]["host"],
             user=st.secrets["mysql"]["user"],
@@ -34,9 +35,14 @@ def get_db_connection():
             port=st.secrets["mysql"]["port"]
         )
     except Exception as e:
+        # We catch the error but return None so the UI knows to use Offline Mode
+        # The 'Test Connection' button will display the specific error if clicked.
         return None
 
 def load_sites_from_db():
+    """
+    Fetches all sites from the database to populate the dropdown menu.
+    """
     conn = get_db_connection()
     if not conn: return {}
     
@@ -49,21 +55,28 @@ def load_sites_from_db():
         sites = {}
         for row in results:
             data = row['json_data']
+            # Ensure data is a dict (some connectors return string for JSON type)
             if isinstance(data, str):
                 data = json.loads(data)
             sites[row['site_name']] = data
         return sites
-    except:
+    except Exception:
         if conn: conn.close()
         return {}
 
 def save_site_to_db(site_name, bid_object):
+    """
+    Saves the current EventBid object to the database using an UPSERT (Insert or Update) query.
+    This is protected against SQL Injection via parameterized queries.
+    """
     conn = get_db_connection()
     if not conn: return False
     
     cursor = conn.cursor()
+    # Convert the full object to a JSON string
     json_str = json.dumps(bid_object.to_dict())
     
+    # Query: Insert row, or update the JSON if the Site Name already exists
     query = """
     INSERT INTO sites (site_name, json_data) 
     VALUES (%s, %s) 
@@ -76,7 +89,7 @@ def save_site_to_db(site_name, bid_object):
         return True
     except Exception as e:
         st.error(f"Save Failed: {e}")
-        conn.close()
+        if conn: conn.close()
         return False
 
 # ==========================================
@@ -153,14 +166,16 @@ class EventBid:
     expenses: Dict[str, Dict] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
-    # Data Handling
+    # Data Handling Helpers
     # ------------------------------------------------------------------
     def to_dict(self):
+        # Convert dataclass to dict, handling dates/times for JSON serialization
         return json.loads(json.dumps(self, default=lambda o: o.isoformat() if isinstance(o, (date, time)) else o.__dict__))
 
     def load_data(self, data_dict: dict):
         for key, value in data_dict.items():
             if hasattr(self, key):
+                # Intelligent type conversion for dates/times from strings
                 if key in ["start_date", "end_date"] and isinstance(value, str):
                     try: setattr(self, key, date.fromisoformat(value))
                     except: pass
@@ -172,6 +187,7 @@ class EventBid:
 
     def apply_site_profile(self, profile):
         if not profile: return
+        # Copy only physical site attributes, ignore event-specific data (like date or autocrat)
         site_keys = [
             "site_name", "site_address", "parking_spaces", "bathrooms_count",
             "camping_allowed", "camping_tents", "camping_rv",
@@ -187,9 +203,10 @@ class EventBid:
                 setattr(self, key, profile[key])
 
     # ------------------------------------------------------------------
-    # Financials (Siloed Logic)
+    # Financial Logic
     # ------------------------------------------------------------------
     def get_total_fixed_costs(self, mode="projected"):
+        # Sum of Site Fee + All Operational Expenses
         ops_total = sum(item.get(mode, 0) for item in self.expenses.values())
         return self.site_fee + ops_total
 
@@ -201,27 +218,28 @@ class EventBid:
         rev_daytrip = self.ticket_daytrip_member * attend_daytrip
         total_gate_revenue = rev_weekend + rev_daytrip
         
-        # 2. Variable Site Costs
+        # 2. Variable Site Costs (Per Person Head Tax)
         total_attendees = attend_weekend + attend_daytrip
         total_variable = self.site_variable_cost * total_attendees
         
-        # 3. Gate Net
+        # 3. Gate Net (The core profit driver)
         gate_net = total_gate_revenue - fixed_costs - total_variable
         
-        # 4. Feast (Siloed)
+        # 4. Feast (Siloed: Revenue - Expense)
         feast_rev = self.feast_fee * feast_count
         feast_exp = self.feast_cost_per_person * feast_count
         feast_net = feast_rev - feast_exp
         
-        # 5. Beds (Siloed & Split)
+        # 5. Beds (Siloed: Revenue Only, usually no variable cost)
         bed_rev = (self.beds_top_price * sold_top) + (self.beds_bot_price * sold_bot)
         bed_net = bed_rev
         
         total_net = gate_net + feast_net + bed_net
         
-        # 6. Break Even (Gate Only)
+        # 6. Break Even Calculation (Gate Only)
         margin = self.ticket_weekend_member - self.site_variable_cost
         
+        # Prevent Divide by Zero / Logic Errors
         if margin <= 0:
             if fixed_costs == 0 and margin == 0:
                 break_even = 0 # Free event on free site
@@ -230,12 +248,13 @@ class EventBid:
         else:
             break_even = math.ceil(fixed_costs / margin)
 
-        # 7. Target Price (What price to set to make exactly $0 profit?)
-        # Formula: (Fixed / Attendees) + Variable
+        # 7. Target Price Calculation
+        # What price do we need to set to make exactly $0.00 profit?
+        # Formula: (Fixed Costs / Attendees) + Variable Cost Per Person
         if total_attendees > 0:
-            target_break_even_price = (fixed_costs / total_attendees) + self.site_variable_cost
+            target_be_price = (fixed_costs / total_attendees) + self.site_variable_cost
         else:
-            target_break_even_price = 0.0
+            target_be_price = 0.0
 
         return {
             "total_attendees": total_attendees,
@@ -246,25 +265,28 @@ class EventBid:
             "bed_net": bed_net,
             "total_net": total_net,
             "break_even": break_even,
-            "target_be_price": target_break_even_price
+            "target_be_price": target_be_price
         }
 
-# ---------------------------------------------------------------------------
-# PDF GENERATION
-# ---------------------------------------------------------------------------
+# ==========================================
+# PDF GENERATION LOGIC
+# ==========================================
 def export_to_pdf(bid: EventBid, projection: dict):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=LETTER, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
     styles = getSampleStyleSheet()
     elements = []
     
+    # Header
     elements.append(Paragraph("Kingdom of Meridies Event Bid", styles["Heading1"]))
     elements.append(Spacer(1, 12))
     
+    # Basic Info
     elements.append(Paragraph(f"<b>Event:</b> {bid.event_name} ({bid.event_type})", styles["Normal"]))
     elements.append(Paragraph(f"<b>Location:</b> {bid.site_name} - {bid.site_address}", styles["Normal"]))
     elements.append(Spacer(1, 12))
     
+    # Kitchen Details
     elements.append(Paragraph("<b>Kitchen Facilities</b>", styles["Heading3"]))
     k_text = f"Size: {bid.kitchen_size} ({bid.kitchen_sq_ft} sq ft)<br/>"
     k_text += f"Equip: {bid.kitchen_stove_burners} Burners, {bid.kitchen_ovens} Ovens<br/>"
@@ -273,6 +295,7 @@ def export_to_pdf(bid: EventBid, projection: dict):
     elements.append(Paragraph(k_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
     
+    # Pricing Details
     elements.append(Paragraph("<b>Gate Pricing</b>", styles["Heading3"]))
     p_text = f"Weekend Member: ${bid.ticket_weekend_member:.2f} (Non-Member: ${bid.ticket_weekend_member + bid.nms_surcharge:.2f})<br/>"
     p_text += f"Daytrip Member: ${bid.ticket_daytrip_member:.2f} (Non-Member: ${bid.ticket_daytrip_member + bid.nms_surcharge:.2f})<br/>"
@@ -280,16 +303,19 @@ def export_to_pdf(bid: EventBid, projection: dict):
     elements.append(Paragraph(p_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
 
+    # Lodging
     elements.append(Paragraph("<b>Lodging Stats</b>", styles["Heading3"]))
     l_text = f"Top Bunks: {bid.beds_top_qty} (${bid.beds_top_price:.2f})<br/>"
     l_text += f"Bottom Bunks: {bid.beds_bot_qty} (${bid.beds_bot_price:.2f})"
     elements.append(Paragraph(l_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
     
+    # Financial Summary Table
     elements.append(Paragraph("<b>Financial Projection</b>", styles["Heading3"]))
     
+    # Handle Break Even string vs int for PDF display
     be_val = projection['break_even']
-    be_str = f"{be_val} Attendees" if isinstance(be_val, int) else str(be_val)
+    be_str = f"{be_val} Attendees" if isinstance(be_val, (int, float)) else str(be_val)
 
     data = [
         ["Category", "Amount"],
@@ -310,9 +336,9 @@ def export_to_pdf(bid: EventBid, projection: dict):
     buffer.seek(0)
     return buffer
 
-# ---------------------------------------------------------------------------
-# STREAMLIT APP
-# ---------------------------------------------------------------------------
+# ==========================================
+# STREAMLIT GUI
+# ==========================================
 def main():
     st.set_page_config(page_title="Meridies Bidder", layout="wide", page_icon=KINGDOM_LOGO_URL)
     
@@ -320,17 +346,29 @@ def main():
     with col_logo: st.image(KINGDOM_LOGO_URL, width=80)
     with col_title: 
         st.title("Kingdom of Meridies Event Bidder")
-        st.caption("Budgeting Tool with Historical Site Database")
+        st.caption("Budgeting Tool with MySQL Database Integration")
 
+    # Initialize Session State for the Bid Object
     if "bid" not in st.session_state:
         st.session_state.bid = EventBid()
     bid = st.session_state.bid
 
-    # --- Sidebar ---
+    # --- SIDEBAR: DATABASE LOADING ---
     with st.sidebar:
         st.header("📂 Database")
         
-        # Load Sites from SQL
+        # 1. Connection Tester
+        if st.button("🔄 Test Database Connection"):
+            conn = get_db_connection()
+            if conn:
+                st.success("✅ Connected successfully!")
+                conn.close()
+            else:
+                st.error("❌ Connection failed. Check 'secrets.toml'.")
+
+        st.divider()
+
+        # 2. Load Sites Logic
         available_sites = load_sites_from_db()
         
         if not available_sites:
@@ -377,6 +415,8 @@ def main():
                 st.success(f"Loaded {site_choice}")
         
         st.divider()
+        
+        # 3. Upload JSON
         uploaded = st.file_uploader("Upload Bid JSON", type="json")
         if uploaded:
             data = json.load(uploaded)
@@ -413,19 +453,20 @@ def main():
     with st.expander("Kitchen Specs", expanded=True):
         k1, k2, k3, k4 = st.columns(4)
         bid.kitchen_size = k1.selectbox("Kitchen Size", ["None", "Small", "Medium", "Large"], index=0)
-        bid.kitchen_sq_ft = k2.number_input("Sq Ft", value=bid.kitchen_sq_ft, step=10)
-        bid.kitchen_stove_burners = k3.number_input("Burners", value=bid.kitchen_stove_burners, step=1)
-        bid.kitchen_ovens = k4.number_input("Ovens", value=bid.kitchen_ovens, step=1)
+        # Using step=1 to fix minus buttons
+        bid.kitchen_sq_ft = k2.number_input("Sq Ft", value=int(bid.kitchen_sq_ft), step=10)
+        bid.kitchen_stove_burners = k3.number_input("Burners", value=int(bid.kitchen_stove_burners), step=1)
+        bid.kitchen_ovens = k4.number_input("Ovens", value=int(bid.kitchen_ovens), step=1)
         
         k5, k6, k7 = st.columns(3)
-        bid.kitchen_3bay_sinks = k5.number_input("3-Bay Sinks", value=bid.kitchen_3bay_sinks, step=1)
-        bid.kitchen_prep_tables = k6.number_input("Prep Tables", value=bid.kitchen_prep_tables, step=1)
-        bid.kitchen_garbage_cans = k7.number_input("Garbage Cans", value=bid.kitchen_garbage_cans, step=1)
+        bid.kitchen_3bay_sinks = k5.number_input("3-Bay Sinks", value=int(bid.kitchen_3bay_sinks), step=1)
+        bid.kitchen_prep_tables = k6.number_input("Prep Tables", value=int(bid.kitchen_prep_tables), step=1)
+        bid.kitchen_garbage_cans = k7.number_input("Garbage Cans", value=int(bid.kitchen_garbage_cans), step=1)
         
         st.caption("Household Cold Storage")
         k8, k9 = st.columns(2)
-        bid.kitchen_fridge_household = k8.number_input("Household Fridges", value=bid.kitchen_fridge_household, step=1)
-        bid.kitchen_freezer_household = k9.number_input("Household Freezers", value=bid.kitchen_freezer_household, step=1)
+        bid.kitchen_fridge_household = k8.number_input("Household Fridges", value=int(bid.kitchen_fridge_household), step=1)
+        bid.kitchen_freezer_household = k9.number_input("Household Freezers", value=int(bid.kitchen_freezer_household), step=1)
 
     with st.expander("ADA & Accessibility", expanded=False):
         a1, a2, a3 = st.columns(3)
@@ -434,8 +475,8 @@ def main():
         bid.ada_bathrooms = a3.checkbox("ADA Bathrooms", bid.ada_bathrooms)
         
         a4, a5 = st.columns(2)
-        bid.ada_parking_count = a4.number_input("Count of ADA Spots", value=bid.ada_parking_count, step=1)
-        bid.ada_bathroom_count = a5.number_input("Count of ADA Stalls", value=bid.ada_bathroom_count, step=1)
+        bid.ada_parking_count = a4.number_input("Count of ADA Spots", value=int(bid.ada_parking_count), step=1)
+        bid.ada_bathroom_count = a5.number_input("Count of ADA Stalls", value=int(bid.ada_bathroom_count), step=1)
 
     # 4. Financials
     st.markdown("---")
@@ -443,31 +484,31 @@ def main():
     
     # ROW 1: Site and NMS
     f1, f2, f3 = st.columns(3)
-    bid.site_fee = f1.number_input("Site Rental Fee (Fixed)", value=bid.site_fee, min_value=0.0, step=10.0)
-    bid.site_variable_cost = f2.number_input("Per Person Site Cost", value=bid.site_variable_cost, min_value=0.0, step=0.5)
-    bid.nms_surcharge = f3.number_input("Non-Member Surcharge (NMS)", value=bid.nms_surcharge, min_value=0.0, step=1.0)
+    bid.site_fee = f1.number_input("Site Rental Fee (Fixed)", value=float(bid.site_fee), min_value=0.0, step=10.0)
+    bid.site_variable_cost = f2.number_input("Per Person Site Cost", value=float(bid.site_variable_cost), min_value=0.0, step=0.5)
+    bid.nms_surcharge = f3.number_input("Non-Member Surcharge (NMS)", value=float(bid.nms_surcharge), min_value=0.0, step=1.0)
 
     # ROW 2: Gate Prices with NMS Calc
     gp1, gp2, gp3, gp4 = st.columns(4)
-    bid.ticket_weekend_member = gp1.number_input("Adult Member Price", value=bid.ticket_weekend_member, min_value=0.0, step=1.0)
+    bid.ticket_weekend_member = gp1.number_input("Adult Member Price", value=float(bid.ticket_weekend_member), min_value=0.0, step=1.0)
     gp2.metric("Adult Non-Member", f"${bid.ticket_weekend_member + bid.nms_surcharge:.2f}")
     
-    bid.ticket_daytrip_member = gp3.number_input("Daytrip Member Price", value=bid.ticket_daytrip_member, min_value=0.0, step=1.0)
+    bid.ticket_daytrip_member = gp3.number_input("Daytrip Member Price", value=float(bid.ticket_daytrip_member), min_value=0.0, step=1.0)
     gp4.metric("Daytrip Non-Member", f"${bid.ticket_daytrip_member + bid.nms_surcharge:.2f}")
     
     st.caption("Feast & Beds (Siloed Costs)")
     fb1, fb2, fb3 = st.columns(3)
-    bid.feast_fee = fb1.number_input("Feast Ticket Price", value=bid.feast_fee, min_value=0.0, step=1.0)
-    bid.feast_cost_per_person = fb2.number_input("Feast Food Cost", value=bid.feast_cost_per_person, min_value=0.0, step=0.5)
-    bid.feast_capacity = fb3.number_input("Feast Max Cap.", value=bid.feast_capacity, step=1)
+    bid.feast_fee = fb1.number_input("Feast Ticket Price", value=float(bid.feast_fee), min_value=0.0, step=1.0)
+    bid.feast_cost_per_person = fb2.number_input("Feast Food Cost", value=float(bid.feast_cost_per_person), min_value=0.0, step=0.5)
+    bid.feast_capacity = fb3.number_input("Feast Max Cap.", value=int(bid.feast_capacity), step=1)
     
-    # BEDS UI
+    # BEDS UI (Top/Bottom Split)
     st.write("**Cabin / Lodging Configuration**")
     b1, b2, b3, b4 = st.columns(4)
-    bid.beds_top_qty = b1.number_input("Qty: Top Bunks", value=bid.beds_top_qty, step=1)
-    bid.beds_top_price = b2.number_input("Price: Top ($)", value=bid.beds_top_price, min_value=0.0, step=1.0)
-    bid.beds_bot_qty = b3.number_input("Qty: Bottom Bunks", value=bid.beds_bot_qty, step=1)
-    bid.beds_bot_price = b4.number_input("Price: Bottom ($)", value=bid.beds_bot_price, min_value=0.0, step=1.0)
+    bid.beds_top_qty = b1.number_input("Qty: Top Bunks", value=int(bid.beds_top_qty), step=1)
+    bid.beds_top_price = b2.number_input("Price: Top ($)", value=float(bid.beds_top_price), min_value=0.0, step=1.0)
+    bid.beds_bot_qty = b3.number_input("Qty: Bottom Bunks", value=int(bid.beds_bot_qty), step=1)
+    bid.beds_bot_price = b4.number_input("Price: Bottom ($)", value=float(bid.beds_bot_price), min_value=0.0, step=1.0)
 
     # 5. Expenses
     st.markdown("---")
@@ -492,12 +533,14 @@ def main():
     proj_fst = p3.number_input("Proj. Feast Eaters", value=50, step=5)
     
     p4, p5 = st.columns(2)
-    sold_top = p4.number_input(f"Proj. Top Beds Sold (Max {bid.beds_top_qty})", value=0, max_value=bid.beds_top_qty, step=1)
-    sold_bot = p5.number_input(f"Proj. Bot Beds Sold (Max {bid.beds_bot_qty})", value=0, max_value=bid.beds_bot_qty, step=1)
+    sold_top = p4.number_input(f"Proj. Top Beds Sold (Max {bid.beds_top_qty})", value=0, max_value=max(0, bid.beds_top_qty), step=1)
+    sold_bot = p5.number_input(f"Proj. Bot Beds Sold (Max {bid.beds_bot_qty})", value=0, max_value=max(0, bid.beds_bot_qty), step=1)
     
     results = bid.calculate_projection(proj_wk, proj_dt, proj_fst, sold_top, sold_bot)
     
-    st.info(f"💡 **Target Price:** To exactly break even with {results['total_attendees']} attendees, your Member Ticket Price must be at least: **${results['target_be_price']:.2f}**")
+    # TARGET PRICE BOX
+    if results['target_be_price'] > 0:
+        st.info(f"💡 **Target Price:** To exactly break even with {results['total_attendees']} attendees, your Member Ticket Price must be at least: **${results['target_be_price']:.2f}**")
 
     r1, r2, r3 = st.columns(3)
     r1.metric("Net Profit", f"${results['total_net']:.2f}")
@@ -536,7 +579,10 @@ def main():
         
         # VALIDATION LOGIC
         if st.button("Save Site to MySQL"):
-            if input_pass != ADMIN_PASSWORD:
+            # Check secrets for admin password
+            correct_pass = st.secrets["general"]["admin_password"] if "general" in st.secrets else "Meridies2024"
+            
+            if input_pass != correct_pass:
                 st.error("⛔ Incorrect Password. You do not have permission to write to the database.")
             elif not db_key_name.strip():
                 st.error("⚠️ Error: Site Name cannot be empty.")
