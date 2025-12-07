@@ -105,12 +105,12 @@ class EventBid:
     camping_rv: int = 0
     
     # Pricing & Costs
-    site_fee: float = 0.0 # Fixed Cost
-    site_variable_cost: float = 0.0 # Per Person Cost
+    site_fee: float = 0.0
+    site_variable_cost: float = 0.0
     
     ticket_weekend_member: float = 0.0
     ticket_daytrip_member: float = 0.0
-    nms_surcharge: float = 10.0  # Default $10 NMS (pass-through)
+    nms_surcharge: float = 10.0
     
     feast_fee: float = 0.0
     feast_cost_per_person: float = 0.0
@@ -125,9 +125,6 @@ class EventBid:
     # Expenses
     expenses: Dict[str, Dict] = field(default_factory=dict)
 
-    # ------------------------------------------------------------------
-    # Data Handling
-    # ------------------------------------------------------------------
     def to_dict(self):
         return json.loads(json.dumps(self, default=lambda o: o.isoformat() if isinstance(o, (date, time)) else o.__dict__))
 
@@ -150,9 +147,6 @@ class EventBid:
             if hasattr(self, key):
                 setattr(self, key, value)
 
-    # ------------------------------------------------------------------
-    # Financials (Siloed Logic)
-    # ------------------------------------------------------------------
     def get_total_fixed_costs(self, mode="projected"):
         ops_total = sum(item.get(mode, 0) for item in self.expenses.values())
         return self.site_fee + ops_total
@@ -160,30 +154,24 @@ class EventBid:
     def calculate_projection(self, attend_weekend, attend_daytrip, feast_count, sold_top, sold_bot, mode="projected"):
         fixed_costs = self.get_total_fixed_costs(mode)
         
-        # 1. Gate Revenue
         rev_weekend = self.ticket_weekend_member * attend_weekend
         rev_daytrip = self.ticket_daytrip_member * attend_daytrip
         total_gate_revenue = rev_weekend + rev_daytrip
         
-        # 2. Variable Site Costs
         total_attendees = attend_weekend + attend_daytrip
         total_variable = self.site_variable_cost * total_attendees
         
-        # 3. Gate Net
         gate_net = total_gate_revenue - fixed_costs - total_variable
         
-        # 4. Feast (Siloed)
         feast_rev = self.feast_fee * feast_count
         feast_exp = self.feast_cost_per_person * feast_count
         feast_net = feast_rev - feast_exp
         
-        # 5. Beds (Siloed & Split)
         bed_rev = (self.beds_top_price * sold_top) + (self.beds_bot_price * sold_bot)
         bed_net = bed_rev
         
         total_net = gate_net + feast_net + bed_net
         
-        # 6. Break Even (Gate Only)
         margin = self.ticket_weekend_member - self.site_variable_cost
         break_even = math.ceil(fixed_costs / margin) if margin > 0 else "N/A"
 
@@ -198,27 +186,21 @@ class EventBid:
             "break_even": break_even
         }
 
-# ---------------------------------------------------------------------------
-# PDF GENERATION
-# ---------------------------------------------------------------------------
 def export_to_pdf(bid: EventBid, projection: dict):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=LETTER, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
     styles = getSampleStyleSheet()
     elements = []
     
-    # Header
     elements.append(Paragraph("Kingdom of Meridies Event Bid", styles["Heading1"]))
     elements.append(Spacer(1, 12))
     
-    # Event Info
     elements.append(Paragraph(f"<b>Event:</b> {bid.event_name} ({bid.event_type})", styles["Normal"]))
     elements.append(Paragraph(f"<b>Group:</b> {bid.group_name}", styles["Normal"]))
     elements.append(Paragraph(f"<b>Location:</b> {bid.site_name} - {bid.site_address}", styles["Normal"]))
     elements.append(Paragraph(f"<b>Dates:</b> {bid.start_date} to {bid.end_date}", styles["Normal"]))
     elements.append(Spacer(1, 12))
     
-    # Site Features
     elements.append(Paragraph("<b>Site Features</b>", styles["Heading3"]))
     site_text = f"Parking: {bid.parking_spaces} spaces | Bathrooms: {bid.bathrooms_count}<br/>"
     if bid.camping_allowed:
@@ -227,7 +209,6 @@ def export_to_pdf(bid: EventBid, projection: dict):
     elements.append(Paragraph(site_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
     
-    # Kitchen
     elements.append(Paragraph("<b>Kitchen Facilities</b>", styles["Heading3"]))
     k_text = f"Size: {bid.kitchen_size} ({bid.kitchen_sq_ft} sq ft)<br/>"
     k_text += f"Equipment: {bid.kitchen_stove_burners} Burners, {bid.kitchen_ovens} Ovens<br/>"
@@ -236,7 +217,6 @@ def export_to_pdf(bid: EventBid, projection: dict):
     elements.append(Paragraph(k_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
     
-    # Pricing
     elements.append(Paragraph("<b>Gate Pricing</b>", styles["Heading3"]))
     p_text = f"Weekend Member: ${bid.ticket_weekend_member:.2f} (Non-Member: ${bid.ticket_weekend_member + bid.nms_surcharge:.2f})<br/>"
     p_text += f"Daytrip Member: ${bid.ticket_daytrip_member:.2f} (Non-Member: ${bid.ticket_daytrip_member + bid.nms_surcharge:.2f})<br/>"
@@ -244,14 +224,12 @@ def export_to_pdf(bid: EventBid, projection: dict):
     elements.append(Paragraph(p_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
 
-    # Lodging
     elements.append(Paragraph("<b>Lodging</b>", styles["Heading3"]))
     l_text = f"Top Bunks: {bid.beds_top_qty} available @ ${bid.beds_top_price:.2f} each<br/>"
     l_text += f"Bottom Bunks: {bid.beds_bot_qty} available @ ${bid.beds_bot_price:.2f} each"
     elements.append(Paragraph(l_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
     
-    # Expenses
     if bid.expenses:
         elements.append(Paragraph("<b>Operational Expenses</b>", styles["Heading3"]))
         exp_data = [["Item", "Projected", "Actual"]]
@@ -265,7 +243,6 @@ def export_to_pdf(bid: EventBid, projection: dict):
         elements.append(exp_table)
         elements.append(Spacer(1, 12))
     
-    # Financial Projection
     elements.append(Paragraph("<b>Financial Projection</b>", styles["Heading3"]))
     data = [
         ["Category", "Amount"],
@@ -290,14 +267,12 @@ def export_to_pdf(bid: EventBid, projection: dict):
     buffer.seek(0)
     return buffer
 
-# ---------------------------------------------------------------------------
-# STREAMLIT APP
-# ---------------------------------------------------------------------------
 def main():
     st.set_page_config(page_title="Meridies Bidder", layout="wide", page_icon=KINGDOM_LOGO_URL)
     
     col_logo, col_title = st.columns([1, 6])
-    with col_logo: st.image(KINGDOM_LOGO_URL, width=80)
+    with col_logo: 
+        st.image(KINGDOM_LOGO_URL, width=80)
     with col_title: 
         st.title("Kingdom of Meridies Event Bidder")
         st.caption("Budgeting Tool with Historical Site Database")
@@ -306,22 +281,19 @@ def main():
         st.session_state.bid = EventBid()
     bid = st.session_state.bid
 
-    # --- Sidebar ---
     with st.sidebar:
         st.header("📂 Actions")
         
-        # Load Site
         site_choice = st.selectbox("Load Known Site", list(SITE_DATABASE.keys()))
         if site_choice != "Select a Site...":
             if st.button("Load Site Data"):
                 bid.apply_site_profile(SITE_DATABASE[site_choice])
-                bid.site_name = site_choice  # FIX: Set the site name explicitly
+                bid.site_name = site_choice
                 st.success(f"Loaded {site_choice}")
                 st.rerun()
         
         st.divider()
         
-        # Upload JSON
         uploaded = st.file_uploader("Upload Bid JSON", type="json")
         if uploaded:
             data = json.load(uploaded)
@@ -331,15 +303,11 @@ def main():
         
         st.divider()
         
-        # Reset Form
         if st.button("🔄 Reset Form", type="secondary"):
             st.session_state.bid = EventBid()
             st.success("Form reset!")
             st.rerun()
 
-    # --- MAIN FORM ---
-    
-    # 1. Event Info
     st.subheader("1. Event Details")
     c1, c2, c3 = st.columns(3)
     bid.event_name = c1.text_input("Event Name", bid.event_name)
@@ -352,11 +320,9 @@ def main():
     bid.end_date = d2.date_input("End Date", bid.end_date)
     bid.is_single_day = d3.checkbox("Single Day Event?", bid.is_single_day)
     
-    # Validation: Date order
     if bid.end_date < bid.start_date:
         st.warning("⚠️ End date is before start date!")
 
-    # Site Location
     st.markdown("---")
     st.subheader("2. Site Information")
     s1, s2 = st.columns(2)
@@ -367,7 +333,6 @@ def main():
     bid.parking_spaces = s3.number_input("Parking Spaces", value=bid.parking_spaces, step=5)
     bid.bathrooms_count = s4.number_input("Bathrooms", value=bid.bathrooms_count, step=1)
 
-    # 3. Staff
     st.markdown("---")
     st.subheader("3. Staffing")
     st1, st2 = st.columns(2)
@@ -380,7 +345,6 @@ def main():
         for i in range(2): 
             bid.feast_stewards[i] = st.text_input(f"Feastcrat {i+1}", bid.feast_stewards[i], key=f"fs{i}")
 
-    # 4. Facilities
     st.markdown("---")
     st.subheader("4. Site Facilities")
     
@@ -420,18 +384,15 @@ def main():
         bid.ada_parking_count = a4.number_input("Count of ADA Spots", value=bid.ada_parking_count, step=1)
         bid.ada_bathroom_count = a5.number_input("Count of ADA Stalls", value=bid.ada_bathroom_count, step=1)
 
-    # 5. Financials
     st.markdown("---")
     st.subheader("5. Financials")
     
-    # ROW 1: Site and NMS
     f1, f2, f3 = st.columns(3)
     bid.site_fee = f1.number_input("Site Rental Fee (Fixed)", value=bid.site_fee, min_value=0.0, step=10.0)
     bid.site_variable_cost = f2.number_input("Per Person Site Cost", value=bid.site_variable_cost, min_value=0.0, step=0.5)
     bid.nms_surcharge = f3.number_input("Non-Member Surcharge (NMS)", value=bid.nms_surcharge, min_value=0.0, step=1.0, 
                                         help="Pass-through fee to SCA Inc. - does not affect event budget")
 
-    # ROW 2: Gate Prices with NMS Calc
     st.caption("Gate Pricing (Member rates used for break-even calculations)")
     gp1, gp2, gp3, gp4 = st.columns(4)
     bid.ticket_weekend_member = gp1.number_input("Adult Member Price", value=bid.ticket_weekend_member, min_value=0.0, step=1.0)
@@ -446,7 +407,6 @@ def main():
     bid.feast_cost_per_person = fb2.number_input("Feast Food Cost", value=bid.feast_cost_per_person, min_value=0.0, step=0.5)
     bid.feast_capacity = fb3.number_input("Feast Max Capacity", value=bid.feast_capacity, step=1)
     
-    # BEDS UI
     st.write("**Cabin / Lodging Configuration**")
     b1, b2, b3, b4 = st.columns(4)
     bid.beds_top_qty = b1.number_input("Qty: Top Bunks", value=bid.beds_top_qty, step=1)
@@ -454,11 +414,9 @@ def main():
     bid.beds_bot_qty = b3.number_input("Qty: Bottom Bunks", value=bid.beds_bot_qty, step=1)
     bid.beds_bot_price = b4.number_input("Price: Bottom ($)", value=bid.beds_bot_price, min_value=0.0, step=1.0)
 
-    # 6. Expenses
     st.markdown("---")
     st.subheader("6. Operational Expenses")
     
-    # Add new expense
     e_col1, e_col2, e_col3 = st.columns([2, 1, 1])
     new_exp_name = e_col1.text_input("New Expense Item", key="new_exp_name")
     new_exp_cost = e_col2.number_input("Cost", 0.0, step=10.0, key="new_exp_cost")
@@ -468,14 +426,12 @@ def main():
             st.success(f"Added: {new_exp_name}")
             st.rerun()
     
-    # Display and manage existing expenses
     if bid.expenses:
         st.caption("Current Expenses")
         for exp_name in list(bid.expenses.keys()):
             exp_cols = st.columns([3, 2, 2, 1])
             exp_cols[0].text(exp_name)
             
-            # Update projected/actual values
             new_proj = exp_cols[1].number_input(
                 "Projected", 
                 value=bid.expenses[exp_name]["projected"], 
@@ -491,18 +447,15 @@ def main():
                 label_visibility="collapsed"
             )
             
-            # Update values if changed
             bid.expenses[exp_name]["projected"] = new_proj
             bid.expenses[exp_name]["actual"] = new_actual
             
-            # Delete button
             if exp_cols[3].button("🗑️", key=f"del_{exp_name}"):
                 del bid.expenses[exp_name]
                 st.rerun()
     else:
         st.info("No expenses added yet. Add operational costs like insurance, supplies, etc.")
 
-    # 7. Projections
     st.markdown("---")
     st.subheader("📊 Financial Projections")
     
@@ -511,7 +464,6 @@ def main():
     proj_dt = p2.number_input("Projected Daytrip Attendees", value=20, step=5)
     proj_fst = p3.number_input("Projected Feast Eaters", value=50, step=5)
     
-    # Validation: Feast capacity
     if proj_fst > bid.feast_capacity and bid.feast_capacity > 0:
         st.warning(f"⚠️ Feast projections ({proj_fst}) exceed capacity ({bid.feast_capacity})!")
     
@@ -531,7 +483,6 @@ def main():
     
     results = bid.calculate_projection(proj_wk, proj_dt, proj_fst, sold_top, sold_bot)
     
-    # Display results with color coding
     r1, r2, r3 = st.columns(3)
     
     net_profit = results['total_net']
@@ -552,7 +503,6 @@ def main():
         
         st.json(results)
 
-    # 8. Exports
     st.markdown("---")
     st.subheader("💾 Save & Submit")
     ex1, ex2 = st.columns(2)
@@ -575,3 +525,24 @@ def main():
         f"bid_{bid.event_name.replace(' ', '_')}.json", 
         "application/json"
     )
+
+    with st.expander("👑 Admin: Export Site for Database"):
+        st.info("Copy the code below to add this site to 'SITE_DATABASE' at the top of the script.")
+        
+        site_export = {k:v for k,v in bid.__dict__.items() if k in [
+            "site_name", "site_address", "parking_spaces", "bathrooms_count",
+            "camping_allowed", "camping_tents", "camping_rv",
+            "kitchen_size", "kitchen_sq_ft", "kitchen_stove_burners",
+            "kitchen_ovens", "kitchen_3bay_sinks", "kitchen_prep_tables",
+            "kitchen_garbage_cans", "kitchen_fridge_household", "kitchen_freezer_household",
+            "ada_ramps", "ada_parking", "ada_parking_count", "ada_bathrooms",
+            "ada_bathroom_count", "site_fee", 
+            "beds_top_qty", "beds_top_price", "beds_bot_qty", "beds_bot_price"
+        ]}
+        
+        key_name = st.text_input("Database Key Name", "New Site")
+        code_str = json.dumps(site_export, indent=4).replace("true", "True").replace("false", "False")
+        st.code(f'"{key_name}": {code_str},', language="python")
+
+if __name__ == "__main__":
+    main()
