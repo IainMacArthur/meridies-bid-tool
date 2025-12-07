@@ -19,6 +19,8 @@ KINGDOM_LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQMZ0z9
 # ==========================================
 # INTERNAL SITE DATABASE (NO API REQUIRED)
 # ==========================================
+# This acts as your "Living Database". You can add as many sites here as you want.
+# When a user selects one, it pre-fills the Site Facilities and Costs.
 KNOWN_SITES = {
     "Select a Site...": None, # Default empty option
     "Example State Park Group Camp": {
@@ -51,8 +53,8 @@ KNOWN_SITES = {
     "Test Site": {
         "site_flat_fee": 1200.0,
         "site_variable_cost": 0.0,
-        "camping_allowed": False,   # Fixed: Capital F
-        "fires_allowed": False,     # Fixed: Capital F
+        "camping_allowed": False,  # FIXED: Capitalized
+        "fires_allowed": False,    # FIXED: Capitalized
         "alcohol_policy": "Dry (no)",
         "kitchen_size": "Medium",
         "kitchen_sq_ft": 0,
@@ -71,10 +73,10 @@ KNOWN_SITES = {
         "classrooms_small": 0,
         "classrooms_med": 0,
         "classrooms_large": 0,
-        "ada_ramps": True,          # Fixed: Capital T
-        "ada_parking": True,        # Fixed: Capital T
+        "ada_ramps": True,         # FIXED: Capitalized
+        "ada_parking": True,       # FIXED: Capitalized
         "ada_parking_count": 4,
-        "ada_bathrooms": True,      # Fixed: Capital T
+        "ada_bathrooms": True,     # FIXED: Capitalized
         "ada_bathroom_count": 2,
         "beds_bot_qty": 0,
         "beds_top_qty": 0
