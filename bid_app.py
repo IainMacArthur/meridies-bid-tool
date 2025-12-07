@@ -7,15 +7,50 @@ import io
 
 # ReportLab imports for PDF generation
 from reportlab.lib.pagesizes import LETTER
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
-from reportlab.lib.units import inch
 
 # ==========================================
 # CONFIGURATION & ASSETS
 # ==========================================
-KINGDOM_LOGO_URL = "https://sca.org/awards/images/Meridies.png"
+KINGDOM_LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQMZ0z9WhWg9G_roekRq7BHmd08icwmjOl6Qg&s"
+
+# ==========================================
+# INTERNAL SITE DATABASE (NO API REQUIRED)
+# ==========================================
+# This acts as your "Living Database". You can add as many sites here as you want.
+# When a user selects one, it pre-fills the Site Facilities and Costs.
+KNOWN_SITES = {
+    "Select a Site...": None, # Default empty option
+    "Example State Park Group Camp": {
+        "site_flat_fee": 1200.00,
+        "site_variable_cost": 5.00,
+        "camping_allowed": True,
+        "fires_allowed": True,
+        "alcohol_policy": "Wet (yes)",
+        "kitchen_size": "Large",
+        "kitchen_sq_ft": 1500,
+        "kitchen_burners": 8,
+        "kitchen_ovens": 4,
+        "kitchen_3bay_sinks": 2,
+        "kitchen_prep_tables": 4,
+        "kitchen_garbage_cans": 6,
+        "kitchen_fridge_household": 1,
+        "kitchen_freezer_household": 1,
+        "kitchen_amenities": ["Walk-in Fridge", "Ice Machine", "Pots/Pans"],
+        "classrooms_small": 2,
+        "classrooms_med": 1,
+        "classrooms_large": 1,
+        "ada_ramps": True,
+        "ada_parking": True,
+        "ada_parking_count": 4,
+        "ada_bathrooms": True,
+        "ada_bathroom_count": 2,
+        "beds_bot_qty": 40,
+        "beds_top_qty": 40
+    }
+}
 
 # ==========================================
 # CORE LOGIC CLASS
@@ -30,7 +65,7 @@ class EventBid:
 
         # Staffing
         self.event_stewards = ["", "", "", ""] 
-        self.feast_stewards = ["", "", ""]     
+        self.feast_stewards = ["", "", ""]      
 
         # Expenses
         self.expenses = {} 
@@ -52,12 +87,20 @@ class EventBid:
         # ADA
         self.ada_ramps = False
         self.ada_parking = False
+        self.ada_parking_count = 0 # NEW
         self.ada_bathrooms = False
+        self.ada_bathroom_count = 0 # NEW
         
         # Kitchen
         self.kitchen_size = "None"
+        self.kitchen_sq_ft = 0 # NEW
         self.kitchen_burners = 0
         self.kitchen_ovens = 0
+        self.kitchen_3bay_sinks = 0 # NEW
+        self.kitchen_prep_tables = 0 # NEW
+        self.kitchen_garbage_cans = 0 # NEW
+        self.kitchen_fridge_household = 0 # NEW
+        self.kitchen_freezer_household = 0 # NEW
         self.kitchen_amenities = [] 
         
         # Gate Pricing
@@ -65,12 +108,12 @@ class EventBid:
         self.ticket_daytrip_member = 0.0
         self.nms_surcharge = 10.0
         
-        # Feast
+        # Feast (Siloed)
         self.feast_ticket_price = 0.0
         self.food_cost_per_person = 0.0 
         self.feast_capacity = 0
         
-        # Lodging (Beds)
+        # Lodging (Siloed)
         self.beds_top_qty = 0
         self.beds_top_price = 0.0
         self.beds_bot_qty = 0
@@ -95,10 +138,18 @@ class EventBid:
             'av_equipment': self.av_equipment,
             'ada_ramps': self.ada_ramps,
             'ada_parking': self.ada_parking,
+            'ada_parking_count': self.ada_parking_count,
             'ada_bathrooms': self.ada_bathrooms,
+            'ada_bathroom_count': self.ada_bathroom_count,
             'kitchen_size': self.kitchen_size,
+            'kitchen_sq_ft': self.kitchen_sq_ft,
             'kitchen_burners': self.kitchen_burners,
             'kitchen_ovens': self.kitchen_ovens,
+            'kitchen_3bay_sinks': self.kitchen_3bay_sinks,
+            'kitchen_prep_tables': self.kitchen_prep_tables,
+            'kitchen_garbage_cans': self.kitchen_garbage_cans,
+            'kitchen_fridge_household': self.kitchen_fridge_household,
+            'kitchen_freezer_household': self.kitchen_freezer_household,
             'kitchen_amenities': self.kitchen_amenities,
             'ticket_weekend_member': self.ticket_weekend_member,
             'ticket_daytrip_member': self.ticket_daytrip_member,
@@ -149,11 +200,20 @@ class EventBid:
         # ADA
         self.ada_ramps = data.get('ada_ramps', False)
         self.ada_parking = data.get('ada_parking', False)
+        self.ada_parking_count = data.get('ada_parking_count', 0)
         self.ada_bathrooms = data.get('ada_bathrooms', False)
+        self.ada_bathroom_count = data.get('ada_bathroom_count', 0)
         
+        # Kitchen
         self.kitchen_size = data.get('kitchen_size', "None")
+        self.kitchen_sq_ft = data.get('kitchen_sq_ft', 0)
         self.kitchen_burners = data.get('kitchen_burners', 0)
         self.kitchen_ovens = data.get('kitchen_ovens', 0)
+        self.kitchen_3bay_sinks = data.get('kitchen_3bay_sinks', 0)
+        self.kitchen_prep_tables = data.get('kitchen_prep_tables', 0)
+        self.kitchen_garbage_cans = data.get('kitchen_garbage_cans', 0)
+        self.kitchen_fridge_household = data.get('kitchen_fridge_household', 0)
+        self.kitchen_freezer_household = data.get('kitchen_freezer_household', 0)
         self.kitchen_amenities = data.get('kitchen_amenities', [])
         
         self.ticket_weekend_member = data.get('ticket_weekend_member', 0.0)
@@ -167,6 +227,35 @@ class EventBid:
         self.beds_bot_price = data.get('beds_bot_price', 0.0)
         self.expenses = data.get('expenses', {})
 
+    def apply_site_profile(self, profile):
+        """Helper to load just the site specific data from the database."""
+        if not profile: return
+        self.site_flat_fee = profile.get("site_flat_fee", 0.0)
+        self.site_variable_cost = profile.get("site_variable_cost", 0.0)
+        self.camping_allowed = profile.get("camping_allowed", False)
+        self.fires_allowed = profile.get("fires_allowed", False)
+        self.alcohol_policy = profile.get("alcohol_policy", "Dry (no)")
+        self.kitchen_size = profile.get("kitchen_size", "None")
+        self.kitchen_sq_ft = profile.get("kitchen_sq_ft", 0)
+        self.kitchen_burners = profile.get("kitchen_burners", 0)
+        self.kitchen_ovens = profile.get("kitchen_ovens", 0)
+        self.kitchen_3bay_sinks = profile.get("kitchen_3bay_sinks", 0)
+        self.kitchen_prep_tables = profile.get("kitchen_prep_tables", 0)
+        self.kitchen_garbage_cans = profile.get("kitchen_garbage_cans", 0)
+        self.kitchen_fridge_household = profile.get("kitchen_fridge_household", 0)
+        self.kitchen_freezer_household = profile.get("kitchen_freezer_household", 0)
+        self.kitchen_amenities = profile.get("kitchen_amenities", [])
+        self.classrooms_small = profile.get("classrooms_small", 0)
+        self.classrooms_med = profile.get("classrooms_med", 0)
+        self.classrooms_large = profile.get("classrooms_large", 0)
+        self.ada_ramps = profile.get("ada_ramps", False)
+        self.ada_parking = profile.get("ada_parking", False)
+        self.ada_parking_count = profile.get("ada_parking_count", 0)
+        self.ada_bathrooms = profile.get("ada_bathrooms", False)
+        self.ada_bathroom_count = profile.get("ada_bathroom_count", 0)
+        self.beds_bot_qty = profile.get("beds_bot_qty", 0)
+        self.beds_top_qty = profile.get("beds_top_qty", 0)
+
     def get_total_fixed_costs(self, mode='projected'):
         total_ops = sum(item[mode] for item in self.expenses.values())
         return self.site_flat_fee + total_ops
@@ -177,6 +266,9 @@ class EventBid:
         return top_rev + bot_rev
 
     def calculate_gate_break_even(self):
+        # NOTE: Feast and Beds are SILOED. They are not included here.
+        # This calculates how many bodies need to pass gate to cover 
+        # Site Rental + Operational Expenses.
         margin = self.ticket_weekend_member - self.site_variable_cost
         fixed_total = self.get_total_fixed_costs(mode='projected')
         if margin <= 0: return None 
@@ -282,18 +374,31 @@ def create_pdf(bid):
         ["Camping:", "Allowed" if bid.camping_allowed else "No"],
         ["Ground Fires:", "Allowed" if bid.fires_allowed else "No"],
         ["Alcohol:", bid.alcohol_policy],
-        ["Kitchen Size:", bid.kitchen_size],
-        ["Burners/Ovens:", f"{bid.kitchen_burners} Burners / {bid.kitchen_ovens} Ovens"],
         ["Classrooms:", f"S:{bid.classrooms_small} / M:{bid.classrooms_med} / L:{bid.classrooms_large}"],
-        ["ADA Access:", f"{'Ramps ' if bid.ada_ramps else ''}{'Parking ' if bid.ada_parking else ''}{'Bathrooms ' if bid.ada_bathrooms else ''}"]
+        ["ADA Access:", f"{'Ramps ' if bid.ada_ramps else ''}{'Parking ' if bid.ada_parking else ''}{'Bathrooms ' if bid.ada_bathrooms else ''}"],
+        ["ADA Specifics:", f"{bid.ada_parking_count} Spots / {bid.ada_bathroom_count} Bathrooms"]
     ]
     t_fac = Table(fac_data, colWidths=[100, 300])
     t_fac.setStyle(TableStyle([('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold')]))
     elements.append(t_fac)
+    elements.append(Spacer(1, 12))
+
+    # Kitchen Details
+    elements.append(Paragraph("Kitchen Specs", h3_style))
+    k_data = [
+        ["Size / Sq Ft:", f"{bid.kitchen_size} / {bid.kitchen_sq_ft} sq ft"],
+        ["Equipment:", f"{bid.kitchen_burners} Burners, {bid.kitchen_ovens} Ovens"],
+        ["Work Space:", f"{bid.kitchen_3bay_sinks} Sinks (3-bay), {bid.kitchen_prep_tables} Prep Tables"],
+        ["Storage/Trash:", f"{bid.kitchen_garbage_cans} Garbage Cans"],
+        ["Household Cold:", f"{bid.kitchen_fridge_household} Fridges, {bid.kitchen_freezer_household} Freezers"]
+    ]
+    t_k = Table(k_data, colWidths=[100, 300])
+    t_k.setStyle(TableStyle([('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold')]))
+    elements.append(t_k)
     
     if bid.kitchen_amenities:
         elements.append(Spacer(1, 6))
-        elements.append(Paragraph(f"<b>Kitchen Equip:</b> {', '.join(bid.kitchen_amenities)}", normal_style))
+        elements.append(Paragraph(f"<b>Other Amenities:</b> {', '.join(bid.kitchen_amenities)}", normal_style))
         
     elements.append(Spacer(1, 12))
     
@@ -329,7 +434,7 @@ def create_pdf(bid):
         ["Projected Expense Total", f"${res['total_expense']:.2f}"],
         ["Projected Revenue Total", f"${res['total_revenue']:.2f}"],
         ["NET PROFIT", f"${res['total_net']:.2f}"],
-        ["BREAK EVEN POINT", f"{res['break_even']} Attendees"]
+        ["BREAK EVEN (Gate Only)", f"{res['break_even']} Attendees"]
     ]
     
     t_fin = Table(fin_data, colWidths=[200, 150])
@@ -365,23 +470,33 @@ def main():
         st.image(KINGDOM_LOGO_URL, width=100)
     with col_title:
         st.title("Kingdom of Meridies Event Bidder")
-        st.caption("A free, private tool for event budgeting.")
+        st.caption("A tool for budgeting and historical site analysis.")
     
-    # --- Sidebar (Upload Logic) ---
-    with st.sidebar:
-        st.header("📂 Save / Load Bid")
-        st.markdown("To save your work, scroll to the bottom and click **Download Bid (JSON)**.")
-        st.markdown("To resume work, upload your `.json` file here:")
-        
-        uploaded_file = st.file_uploader("Upload a Bid File", type=['json'])
-
     # Initialize Bid Object
     bid = EventBid()
     
-    # Check if a file was just uploaded
+    # --- Sidebar (Upload Logic) ---
+    with st.sidebar:
+        st.header("📂 Data Management")
+        
+        # 1. Database Load
+        st.subheader("1. Load Known Site")
+        selected_site = st.selectbox("Choose a Historical Site Profile", options=KNOWN_SITES.keys())
+        if selected_site and selected_site != "Select a Site...":
+            if st.button("Load Site Data"):
+                profile = KNOWN_SITES[selected_site]
+                bid.apply_site_profile(profile)
+                st.success(f"Loaded details for {selected_site}")
+
+        st.markdown("---")
+
+        # 2. File Upload
+        st.subheader("2. Load Saved Bid")
+        uploaded_file = st.file_uploader("Upload a Bid File (.json)", type=['json'])
+
+    # Check if a file was just uploaded (Overwrites database selection)
     if uploaded_file is not None:
         try:
-            # Read the file
             data = json.load(uploaded_file)
             bid.load_data(data)
             st.sidebar.success("✅ Bid Loaded Successfully!")
@@ -448,21 +563,38 @@ def main():
     # ADA ACCESSIBILITY
     with st.expander("Accessibility (ADA)", expanded=True):
         st.caption("Select all that apply to this site:")
-        ada_c1, ada_c2, ada_c3 = st.columns(3)
+        ada_c1, ada_c2, ada_c3, ada_c4 = st.columns(4)
         bid.ada_ramps = ada_c1.checkbox("♿ Ramps / Level Access", value=bid.ada_ramps)
         bid.ada_parking = ada_c2.checkbox("🅿️ ADA Parking Available", value=bid.ada_parking)
         bid.ada_bathrooms = ada_c3.checkbox("🚻 ADA Accessible Bathrooms", value=bid.ada_bathrooms)
+        
+        st.markdown("**ADA Quantities**")
+        ac1, ac2 = st.columns(2)
+        bid.ada_parking_count = ac1.number_input("Count of ADA Parking Spaces", value=bid.ada_parking_count, min_value=0)
+        bid.ada_bathroom_count = ac2.number_input("Count of ADA Bathrooms", value=bid.ada_bathroom_count, min_value=0)
 
     with st.expander("Kitchen & Dining Amenities", expanded=False):
-        k1, k2, k3 = st.columns(3)
+        k1, k2, k3, k4 = st.columns(4)
         bid.kitchen_size = k1.selectbox("Kitchen Size", ["None", "Small", "Medium", "Large", "Giant"], index=0)
-        bid.kitchen_burners = k2.number_input("Number of Burners/Gas Eyes", value=bid.kitchen_burners, min_value=0)
-        bid.kitchen_ovens = k3.number_input("Number of Ovens", value=bid.kitchen_ovens, min_value=0)
+        bid.kitchen_sq_ft = k2.number_input("Kitchen Sq. Ft.", value=bid.kitchen_sq_ft, step=10)
+        bid.kitchen_burners = k3.number_input("Number of Burners", value=bid.kitchen_burners, min_value=0)
+        bid.kitchen_ovens = k4.number_input("Number of Ovens", value=bid.kitchen_ovens, min_value=0)
         
-        st.markdown("**Available Equipment:**")
+        st.markdown("**Kitchen Workspace & Storage**")
+        kw1, kw2, kw3 = st.columns(3)
+        bid.kitchen_3bay_sinks = kw1.number_input("Qty 3-Bay Sinks", value=bid.kitchen_3bay_sinks, min_value=0)
+        bid.kitchen_prep_tables = kw2.number_input("Qty Prep Tables", value=bid.kitchen_prep_tables, min_value=0)
+        bid.kitchen_garbage_cans = kw3.number_input("Qty Garbage Cans", value=bid.kitchen_garbage_cans, min_value=0)
+
+        st.markdown("**Household Cold Storage** (In addition to Walk-ins)")
+        ref1, ref2, ref3 = st.columns(3)
+        bid.kitchen_fridge_household = ref1.number_input("Qty Household Fridges", value=bid.kitchen_fridge_household, min_value=0)
+        bid.kitchen_freezer_household = ref2.number_input("Qty Household Freezers", value=bid.kitchen_freezer_household, min_value=0)
+        
+        st.markdown("**Other Equipment:**")
         available_opts = [
             "Hobart Dishwasher", "Food Warmers", "Buffet Warming Table", 
-            "Utensils/Pots/Pans", "Ice Machine", "Walk-in Fridge", "Freezer"
+            "Utensils/Pots/Pans", "Ice Machine", "Walk-in Fridge", "Walk-in Freezer"
         ]
         default_opts = [x for x in bid.kitchen_amenities if x in available_opts]
         bid.kitchen_amenities = st.multiselect("Select all that apply:", available_opts, default=default_opts)
@@ -517,6 +649,7 @@ def main():
     # 5. Lodging / Cabins
     st.markdown("---")
     st.subheader("6. Cabins & Lodging")
+    st.info("ℹ️ Bed Revenue is siloed. It is added to Net Profit but excluded from Gate Break-Even calculations.")
     with st.expander("Configure Bunks", expanded=False):
         b1, b2, b3, b4 = st.columns(4)
         bid.beds_bot_qty = b1.number_input("Qty: Bottom Bunks", value=bid.beds_bot_qty, step=1, min_value=0)
@@ -580,6 +713,7 @@ def main():
     # 7. Feast
     st.markdown("---")
     st.subheader("8. Feast Details")
+    st.info("ℹ️ Feast Costs are siloed. Feast Expense is subtracted from Feast Revenue to create Feast Net. This does not impact Gate Break-Even.")
     f1, f2, f3 = st.columns(3)
     bid.feast_ticket_price = f1.number_input("Feast Ticket Price (Revenue) ($)", value=bid.feast_ticket_price, min_value=0.0)
     bid.food_cost_per_person = f2.number_input("Food Cost Budget (Expense) ($)", value=bid.food_cost_per_person, min_value=0.0)
@@ -618,22 +752,30 @@ def main():
             st.markdown(f"### Net Profit: :green[${res['total_net']:.2f}]")
             
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Break Even (Full Price Heads)", res['break_even'] if res['break_even'] else "Impossible")
+            m1.metric("Break Even (Gate Only)", res['break_even'] if res['break_even'] else "Impossible")
             m2.metric("Kingdom Share (50%)", f"${res['kingdom_share']:.2f}")
             m3.metric("Group Share", f"${res['group_share']:.2f}")
             m4.metric("Total Expenses", f"${res['total_expense']:.2f}")
 
             with st.expander("See Financial Breakdown"):
-                st.write(f"**Gate Net:** ${res['gate_net']:.2f}")
-                st.write(f"**Feast Net:** ${res['feast_net']:.2f}")
-                st.write(f"**Bed/Cabin Net:** ${res['bed_net']:.2f}")
+                col_fin1, col_fin2 = st.columns(2)
+                with col_fin1:
+                    st.write("#### Net Calculations (Profit)")
+                    st.write(f"**Gate Net:** ${res['gate_net']:.2f}")
+                    st.write(f"**Feast Net:** ${res['feast_net']:.2f}")
+                    st.write(f"**Bed/Cabin Net:** ${res['bed_net']:.2f}")
+                with col_fin2:
+                    st.write("#### Totals")
+                    st.write(f"**Total Revenue:** ${res['total_revenue']:.2f}")
+                    st.write(f"**Total Expenses:** ${res['total_expense']:.2f}")
+                
                 if mode_key == 'actual':
                     st.info("Results based on ACTUALS column.")
 
     # --- SAVE TO FILE (JSON & PDF) ---
     st.markdown("---")
     st.subheader("💾 Save & Submit")
-    st.caption("Use the JSON file to save your work and resume later. Use the PDF file to submit your bid.")
+    st.caption("Use the JSON file to save your work. Use the PDF file to submit your bid.")
     
     col_save, col_pdf = st.columns(2)
     
@@ -660,6 +802,46 @@ def main():
             file_name=f"Bid_SUBMIT_{clean_name}_{date_str}.pdf",
             mime="application/pdf"
         )
+        
+    # --- ADMIN: EXPORT SITE TO DB ---
+    with st.expander("👑 Admin: Export Site for Database"):
+        st.write("Use this to generate the code needed to add this site to the 'KNOWN_SITES' list in the Python script.")
+        
+        # Create a dictionary of only site attributes
+        site_export = {
+            "site_flat_fee": bid.site_flat_fee,
+            "site_variable_cost": bid.site_variable_cost,
+            "camping_allowed": bid.camping_allowed,
+            "fires_allowed": bid.fires_allowed,
+            "alcohol_policy": bid.alcohol_policy,
+            "kitchen_size": bid.kitchen_size,
+            "kitchen_sq_ft": bid.kitchen_sq_ft,
+            "kitchen_burners": bid.kitchen_burners,
+            "kitchen_ovens": bid.kitchen_ovens,
+            "kitchen_3bay_sinks": bid.kitchen_3bay_sinks,
+            "kitchen_prep_tables": bid.kitchen_prep_tables,
+            "kitchen_garbage_cans": bid.kitchen_garbage_cans,
+            "kitchen_fridge_household": bid.kitchen_fridge_household,
+            "kitchen_freezer_household": bid.kitchen_freezer_household,
+            "kitchen_amenities": bid.kitchen_amenities,
+            "classrooms_small": bid.classrooms_small,
+            "classrooms_med": bid.classrooms_med,
+            "classrooms_large": bid.classrooms_large,
+            "ada_ramps": bid.ada_ramps,
+            "ada_parking": bid.ada_parking,
+            "ada_parking_count": bid.ada_parking_count,
+            "ada_bathrooms": bid.ada_bathrooms,
+            "ada_bathroom_count": bid.ada_bathroom_count,
+            "beds_bot_qty": bid.beds_bot_qty,
+            "beds_top_qty": bid.beds_top_qty
+        }
+        
+        # Format as Python dictionary string
+        site_name_key = st.text_input("Site Name (for Database Key)", value="New Site Name")
+        json_str = json.dumps(site_export, indent=4)
+        
+        st.code(f'"{site_name_key}": {json_str},', language='python')
+        st.info("Copy the code above and paste it into the 'KNOWN_SITES' dictionary at the top of the script.")
 
 if __name__ == "__main__":
     main()
