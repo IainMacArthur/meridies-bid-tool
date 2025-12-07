@@ -25,6 +25,7 @@ KINGDOM_LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQMZ0z9
 def get_db_connection():
     """
     Establishes a connection to the MySQL database using credentials from .streamlit/secrets.toml
+    Includes VERBOSE ERROR REPORTING for debugging.
     """
     try:
         return mysql.connector.connect(
@@ -35,8 +36,10 @@ def get_db_connection():
             port=st.secrets["mysql"]["port"]
         )
     except Exception as e:
-        # We catch the error but return None so the UI knows to use Offline Mode
-        # The 'Test Connection' button will display the specific error if clicked.
+        # ---------------------------------------------------------
+        # DEBUGGING: Print the exact error to the screen
+        # ---------------------------------------------------------
+        st.error(f"🚨 DATABASE CONNECTION ERROR: {e}")
         return None
 
 def load_sites_from_db():
@@ -60,7 +63,7 @@ def load_sites_from_db():
                 data = json.loads(data)
             sites[row['site_name']] = data
         return sites
-    except Exception:
+    except Exception as e:
         if conn: conn.close()
         return {}
 
@@ -363,8 +366,7 @@ def main():
             if conn:
                 st.success("✅ Connected successfully!")
                 conn.close()
-            else:
-                st.error("❌ Connection failed. Check 'secrets.toml'.")
+            # If get_db_connection() failed (returned None), it already printed the st.error message.
 
         st.divider()
 
@@ -594,7 +596,8 @@ def main():
                     st.success(f"Successfully saved '{db_key_name}' to the database!")
                     st.cache_data.clear() # Reload data
                 else:
-                    st.error("Failed to save. Check database connection.")
+                    # NOTE: The actual error message is printed inside save_site_to_db via st.error
+                    pass
 
 if __name__ == "__main__":
     main()
