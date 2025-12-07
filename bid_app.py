@@ -17,7 +17,6 @@ from reportlab.lib import colors
 KINGDOM_LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQMZ0z9WhWg9G_roekRq7BHmd08icwmjOl6Qg&s"
 
 # ==========================================
-# ==========================================
 # INTERNAL SITE DATABASE (NO API REQUIRED)
 # ==========================================
 KNOWN_SITES = {
@@ -80,11 +79,6 @@ KNOWN_SITES = {
         "beds_bot_qty": 0,
         "beds_top_qty": 0
     }
-}
-    "ada_bathroom_count": 2,
-    "beds_bot_qty": 0,
-    "beds_top_qty": 0
-},
 }
 
 # ==========================================
