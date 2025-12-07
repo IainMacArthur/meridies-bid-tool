@@ -351,7 +351,6 @@ def main():
         st.title("Kingdom of Meridies Event Bidder")
         st.caption("Budgeting Tool with MySQL Database Integration")
 
-    # Initialize Session State for the Bid Object
     if "bid" not in st.session_state:
         st.session_state.bid = EventBid()
     bid = st.session_state.bid
@@ -366,14 +365,30 @@ def main():
             if conn:
                 st.success("✅ Connected successfully!")
                 conn.close()
-            # If get_db_connection() failed (returned None), it already printed the st.error message.
+                st.rerun() # Force refresh to clear offline warning
+            # Error is handled by get_db_connection print
 
         st.divider()
 
         # 2. Load Sites Logic
-        available_sites = load_sites_from_db()
+        # Try to fetch sites
+        db_sites = load_sites_from_db()
         
-        if not available_sites:
+        # Check connection separately to define status
+        conn_check = get_db_connection()
+        is_connected = False
+        if conn_check:
+            is_connected = True
+            conn_check.close()
+
+        if is_connected:
+            if not db_sites:
+                st.info("🟢 Database Connected (Empty). Save a site to see it here!")
+                available_sites = {}
+            else:
+                st.success(f"🟢 Connected: {len(db_sites)} sites found.")
+                available_sites = db_sites
+        else:
             st.warning("⚠️ Database Disconnected. Using offline mode.")
             available_sites = {
                 "Select a Site...": None,
@@ -594,10 +609,10 @@ def main():
                 success = save_site_to_db(db_key_name, bid)
                 if success:
                     st.success(f"Successfully saved '{db_key_name}' to the database!")
-                    st.cache_data.clear() # Reload data
+                    # FORCE REFRESH to update the dropdown list immediately
+                    st.rerun() 
                 else:
-                    # NOTE: The actual error message is printed inside save_site_to_db via st.error
-                    pass
+                    st.error("Failed to save. Check database connection.")
 
 if __name__ == "__main__":
     main()
