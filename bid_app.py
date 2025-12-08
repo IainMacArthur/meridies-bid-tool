@@ -484,20 +484,16 @@ def main():
     bid.beds_bot_qty = b3.number_input("Qty: Bottom Bunks", value=int(bid.beds_bot_qty), step=1)
     bid.beds_bot_price = b4.number_input("Price: Bottom ($)", value=float(bid.beds_bot_price), min_value=0.0, step=1.0)
 
-    # 5. EXPENSES SECTION (FIXED)
+    # 5. EXPENSES SECTION (UPDATED)
     st.markdown("---")
     st.subheader("5. Operational Expenses")
     
     # Callback function to add item and clear inputs
     def add_expense_callback():
-        # Get values from session state
         name = st.session_state["new_exp_name_input"]
         cost = st.session_state["new_exp_cost_input"]
-        
         if name:
-            # Add to bid object
             st.session_state.bid.expenses[name] = {"projected": cost, "actual": 0.0}
-            # Clear inputs by resetting session state keys
             st.session_state["new_exp_name_input"] = ""
             st.session_state["new_exp_cost_input"] = 0.0
 
@@ -507,12 +503,23 @@ def main():
     e_col2.number_input("Cost", min_value=0.0, step=10.0, key="new_exp_cost_input")
     e_col3.button("Add Expense", on_click=add_expense_callback)
 
-    # Display List
+    # Display List with Delete Buttons
     if bid.expenses:
         st.markdown("##### Current Budget Items:")
-        # Convert to DataFrame for cleaner display
-        exp_list = [{"Item": k, "Projected Cost": f"${v['projected']:.2f}"} for k, v in bid.expenses.items()]
-        st.dataframe(pd.DataFrame(exp_list), use_container_width=True, hide_index=True)
+        # Header
+        h1, h2, h3 = st.columns([3, 2, 1])
+        h1.markdown("**Item**")
+        h2.markdown("**Cost**")
+        h3.markdown("**Action**")
+        
+        # Rows
+        for name, data in list(bid.expenses.items()):
+            c1, c2, c3 = st.columns([3, 2, 1])
+            c1.write(name)
+            c2.write(f"${data['projected']:.2f}")
+            if c3.button("🗑️ Delete", key=f"del_{name}"):
+                del bid.expenses[name]
+                st.rerun()
 
     # 6. Results & 7. Exports (Standard)
     st.markdown("---")
