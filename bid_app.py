@@ -23,10 +23,6 @@ KINGDOM_LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQMZ0z9
 # MYSQL DATABASE FUNCTIONS
 # ==========================================
 def get_db_connection():
-    """
-    Establishes a connection to the MySQL database using credentials from .streamlit/secrets.toml
-    Includes VERBOSE ERROR REPORTING for debugging.
-    """
     try:
         return mysql.connector.connect(
             host=st.secrets["mysql"]["host"],
@@ -35,17 +31,10 @@ def get_db_connection():
             database=st.secrets["mysql"]["database"],
             port=st.secrets["mysql"]["port"]
         )
-    except Exception as e:
-        # ---------------------------------------------------------
-        # DEBUGGING: Print the exact error to the screen
-        # ---------------------------------------------------------
-        st.error(f"🚨 DATABASE CONNECTION ERROR: {e}")
+    except Exception:
         return None
 
-def load_sites_from_db():
-    """
-    Fetches all sites from the database to populate the dropdown menu.
-    """
+def load_sites_from_db(include_archived=False):
     conn = get_db_connection()
     if not conn: return {}
     
@@ -58,28 +47,30 @@ def load_sites_from_db():
         sites = {}
         for row in results:
             data = row['json_data']
-            # Ensure data is a dict (some connectors return string for JSON type)
             if isinstance(data, str):
                 data = json.loads(data)
+            
+            is_archived = data.get("archived", False)
+            if not include_archived and is_archived:
+                continue
+                
             sites[row['site_name']] = data
         return sites
-    except Exception as e:
+    except Exception:
         if conn: conn.close()
         return {}
 
 def save_site_to_db(site_name, bid_object):
-    """
-    Saves the current EventBid object to the database using an UPSERT (Insert or Update) query.
-    This is protected against SQL Injection via parameterized queries.
-    """
     conn = get_db_connection()
     if not conn: return False
     
     cursor = conn.cursor()
-    # Convert the full object to a JSON string
-    json_str = json.dumps(bid_object.to_dict())
+    data_dict = bid_object.to_dict()
+    # Ensure archived status is preserved or defaults to False
+    data_dict["archived"] = False 
     
-    # Query: Insert row, or update the JSON if the Site Name already exists
+    json_str = json.dumps(data_dict)
+    
     query = """
     INSERT INTO sites (site_name, json_data) 
     VALUES (%s, %s) 
@@ -95,19 +86,50 @@ def save_site_to_db(site_name, bid_object):
         if conn: conn.close()
         return False
 
+def toggle_archive_status(site_name, current_data, archive=True):
+    conn = get_db_connection()
+    if not conn: return False
+    
+    current_data["archived"] = archive
+    json_str = json.dumps(current_data)
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE sites SET json_data = %s WHERE site_name = %s", (json_str, site_name))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Archive Failed: {e}")
+        if conn: conn.close()
+        return False
+
+def delete_site_permanently(site_name):
+    conn = get_db_connection()
+    if not conn: return False
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM sites WHERE site_name = %s", (site_name,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Delete Failed: {e}")
+        if conn: conn.close()
+        return False
+
 # ==========================================
 # DATA MODEL
 # ==========================================
 @dataclass
 class EventBid:
-    # Basic Event Info
     origin_kingdom: str = "Meridies"
     group_name: str = ""
     event_type: str = "Local"  
     event_name: str = ""
     bid_for_year: int = datetime.now().year
     
-    # Site Info
     site_name: str = ""
     site_address: str = ""
     start_date: date = date.today()
@@ -117,11 +139,9 @@ class EventBid:
     gate_time: time = time(17, 0)
     is_single_day: bool = False
     
-    # Staff
     event_stewards: List[str] = field(default_factory=lambda: ["", "", "", ""])
     feast_stewards: List[str] = field(default_factory=lambda: ["", "", ""])
     
-    # Site Features
     parking_spaces: int = 0
     bathrooms_count: int = 0
     ada_ramps: bool = False
@@ -130,7 +150,6 @@ class EventBid:
     ada_bathrooms: bool = False
     ada_bathroom_count: int = 0
 
-    # Kitchen
     kitchen_size: str = "None"
     kitchen_sq_ft: int = 0
     kitchen_stove_burners: int = 0
@@ -142,12 +161,10 @@ class EventBid:
     kitchen_freezer_household: int = 0
     kitchen_amenities: List[str] = field(default_factory=list)
 
-    # Camping / Lodging
     camping_allowed: bool = False
     camping_tents: int = 0
     camping_rv: int = 0
     
-    # Pricing & Costs
     site_fee: float = 0.0 
     site_variable_cost: float = 0.0 
     
@@ -159,26 +176,19 @@ class EventBid:
     feast_cost_per_person: float = 0.0
     feast_capacity: int = 0
     
-    # BEDS (Split Top/Bottom)
     beds_top_qty: int = 0
     beds_top_price: float = 0.0
     beds_bot_qty: int = 0
     beds_bot_price: float = 0.0
 
-    # Expenses
     expenses: Dict[str, Dict] = field(default_factory=dict)
 
-    # ------------------------------------------------------------------
-    # Data Handling Helpers
-    # ------------------------------------------------------------------
     def to_dict(self):
-        # Convert dataclass to dict, handling dates/times for JSON serialization
         return json.loads(json.dumps(self, default=lambda o: o.isoformat() if isinstance(o, (date, time)) else o.__dict__))
 
     def load_data(self, data_dict: dict):
         for key, value in data_dict.items():
             if hasattr(self, key):
-                # Intelligent type conversion for dates/times from strings
                 if key in ["start_date", "end_date"] and isinstance(value, str):
                     try: setattr(self, key, date.fromisoformat(value))
                     except: pass
@@ -190,7 +200,6 @@ class EventBid:
 
     def apply_site_profile(self, profile):
         if not profile: return
-        # Copy only physical site attributes, ignore event-specific data (like date or autocrat)
         site_keys = [
             "site_name", "site_address", "parking_spaces", "bathrooms_count",
             "camping_allowed", "camping_tents", "camping_rv",
@@ -205,55 +214,41 @@ class EventBid:
             if key in profile:
                 setattr(self, key, profile[key])
 
-    # ------------------------------------------------------------------
-    # Financial Logic
-    # ------------------------------------------------------------------
     def get_total_fixed_costs(self, mode="projected"):
-        # Sum of Site Fee + All Operational Expenses
         ops_total = sum(item.get(mode, 0) for item in self.expenses.values())
         return self.site_fee + ops_total
 
     def calculate_projection(self, attend_weekend, attend_daytrip, feast_count, sold_top, sold_bot, mode="projected"):
         fixed_costs = self.get_total_fixed_costs(mode)
         
-        # 1. Gate Revenue
         rev_weekend = self.ticket_weekend_member * attend_weekend
         rev_daytrip = self.ticket_daytrip_member * attend_daytrip
         total_gate_revenue = rev_weekend + rev_daytrip
         
-        # 2. Variable Site Costs (Per Person Head Tax)
         total_attendees = attend_weekend + attend_daytrip
         total_variable = self.site_variable_cost * total_attendees
         
-        # 3. Gate Net (The core profit driver)
         gate_net = total_gate_revenue - fixed_costs - total_variable
         
-        # 4. Feast (Siloed: Revenue - Expense)
         feast_rev = self.feast_fee * feast_count
         feast_exp = self.feast_cost_per_person * feast_count
         feast_net = feast_rev - feast_exp
         
-        # 5. Beds (Siloed: Revenue Only, usually no variable cost)
         bed_rev = (self.beds_top_price * sold_top) + (self.beds_bot_price * sold_bot)
         bed_net = bed_rev
         
         total_net = gate_net + feast_net + bed_net
         
-        # 6. Break Even Calculation (Gate Only)
         margin = self.ticket_weekend_member - self.site_variable_cost
         
-        # Prevent Divide by Zero / Logic Errors
         if margin <= 0:
             if fixed_costs == 0 and margin == 0:
-                break_even = 0 # Free event on free site
+                break_even = 0 
             else:
-                break_even = "Price < Variable Cost" # Cannot cover fixed costs if losing money per head
+                break_even = "Price < Variable Cost"
         else:
             break_even = math.ceil(fixed_costs / margin)
 
-        # 7. Target Price Calculation
-        # What price do we need to set to make exactly $0.00 profit?
-        # Formula: (Fixed Costs / Attendees) + Variable Cost Per Person
         if total_attendees > 0:
             target_be_price = (fixed_costs / total_attendees) + self.site_variable_cost
         else:
@@ -272,7 +267,7 @@ class EventBid:
         }
 
 # ==========================================
-# PDF GENERATION LOGIC
+# PDF GENERATION
 # ==========================================
 def export_to_pdf(bid: EventBid, projection: dict):
     buffer = io.BytesIO()
@@ -280,16 +275,13 @@ def export_to_pdf(bid: EventBid, projection: dict):
     styles = getSampleStyleSheet()
     elements = []
     
-    # Header
     elements.append(Paragraph("Kingdom of Meridies Event Bid", styles["Heading1"]))
     elements.append(Spacer(1, 12))
     
-    # Basic Info
     elements.append(Paragraph(f"<b>Event:</b> {bid.event_name} ({bid.event_type})", styles["Normal"]))
     elements.append(Paragraph(f"<b>Location:</b> {bid.site_name} - {bid.site_address}", styles["Normal"]))
     elements.append(Spacer(1, 12))
     
-    # Kitchen Details
     elements.append(Paragraph("<b>Kitchen Facilities</b>", styles["Heading3"]))
     k_text = f"Size: {bid.kitchen_size} ({bid.kitchen_sq_ft} sq ft)<br/>"
     k_text += f"Equip: {bid.kitchen_stove_burners} Burners, {bid.kitchen_ovens} Ovens<br/>"
@@ -298,7 +290,6 @@ def export_to_pdf(bid: EventBid, projection: dict):
     elements.append(Paragraph(k_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
     
-    # Pricing Details
     elements.append(Paragraph("<b>Gate Pricing</b>", styles["Heading3"]))
     p_text = f"Weekend Member: ${bid.ticket_weekend_member:.2f} (Non-Member: ${bid.ticket_weekend_member + bid.nms_surcharge:.2f})<br/>"
     p_text += f"Daytrip Member: ${bid.ticket_daytrip_member:.2f} (Non-Member: ${bid.ticket_daytrip_member + bid.nms_surcharge:.2f})<br/>"
@@ -306,17 +297,14 @@ def export_to_pdf(bid: EventBid, projection: dict):
     elements.append(Paragraph(p_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
 
-    # Lodging
     elements.append(Paragraph("<b>Lodging Stats</b>", styles["Heading3"]))
     l_text = f"Top Bunks: {bid.beds_top_qty} (${bid.beds_top_price:.2f})<br/>"
     l_text += f"Bottom Bunks: {bid.beds_bot_qty} (${bid.beds_bot_price:.2f})"
     elements.append(Paragraph(l_text, styles["Normal"]))
     elements.append(Spacer(1, 12))
     
-    # Financial Summary Table
     elements.append(Paragraph("<b>Financial Projection</b>", styles["Heading3"]))
     
-    # Handle Break Even string vs int for PDF display
     be_val = projection['break_even']
     be_str = f"{be_val} Attendees" if isinstance(be_val, (int, float)) else str(be_val)
 
@@ -345,84 +333,55 @@ def export_to_pdf(bid: EventBid, projection: dict):
 def main():
     st.set_page_config(page_title="Meridies Bidder", layout="wide", page_icon=KINGDOM_LOGO_URL)
     
+    # Initialize Session State
+    if "bid" not in st.session_state:
+        st.session_state.bid = EventBid()
+    if "is_admin" not in st.session_state:
+        st.session_state.is_admin = False
+        
+    bid = st.session_state.bid
+
     col_logo, col_title = st.columns([1, 6])
     with col_logo: st.image(KINGDOM_LOGO_URL, width=80)
     with col_title: 
         st.title("Kingdom of Meridies Event Bidder")
-        st.caption("Budgeting Tool with MySQL Database Integration")
+        role = "Admin Mode" if st.session_state.is_admin else "Public Mode"
+        st.caption(f"Budgeting Tool • {role}")
 
-    if "bid" not in st.session_state:
-        st.session_state.bid = EventBid()
-    bid = st.session_state.bid
-
-    # --- SIDEBAR: DATABASE LOADING ---
+    # --- SIDEBAR: AUTH & DATABASE ---
     with st.sidebar:
+        # LOGIN SECTION
+        if not st.session_state.is_admin:
+            with st.expander("🔐 Admin Login", expanded=True):
+                admin_pass = st.text_input("Password", type="password")
+                if st.button("Login"):
+                    correct_pass = st.secrets["general"]["admin_password"] if "general" in st.secrets else "Meridies2024"
+                    if admin_pass == correct_pass:
+                        st.session_state.is_admin = True
+                        st.rerun()
+                    else:
+                        st.error("Incorrect Password")
+        else:
+            if st.button("🔓 Log Out"):
+                st.session_state.is_admin = False
+                st.rerun()
+            st.success("You are logged in as Admin.")
+            st.markdown("---")
+
         st.header("📂 Database")
         
-        # 1. Connection Tester
-        if st.button("🔄 Test Database Connection"):
-            conn = get_db_connection()
-            if conn:
-                st.success("✅ Connected successfully!")
-                conn.close()
-                st.rerun() # Force refresh to clear offline warning
-            # Error is handled by get_db_connection print
-
-        st.divider()
-
-        # 2. Load Sites Logic
-        # Try to fetch sites
-        db_sites = load_sites_from_db()
+        # Load Sites logic (Always visible)
+        # Admins see ALL sites (including archived), Public sees only Active
+        available_sites = load_sites_from_db(include_archived=st.session_state.is_admin)
         
-        # Check connection separately to define status
-        conn_check = get_db_connection()
-        is_connected = False
-        if conn_check:
-            is_connected = True
-            conn_check.close()
-
-        if is_connected:
-            if not db_sites:
-                st.info("🟢 Database Connected (Empty). Save a site to see it here!")
-                available_sites = {}
+        if not available_sites:
+            # Fallback if DB offline
+            available_sites = {"Select a Site...": None}
+            if get_db_connection():
+                st.info("Database empty.")
             else:
-                st.success(f"🟢 Connected: {len(db_sites)} sites found.")
-                available_sites = db_sites
-        else:
-            st.warning("⚠️ Database Disconnected. Using offline mode.")
-            available_sites = {
-                "Select a Site...": None,
-                "Example State Park (Offline)": {
-                    "site_name": "Example State Park",
-                    "site_address": "123 Forest Lane",
-                    "parking_spaces": 100,
-                    "bathrooms_count": 4,
-                    "camping_allowed": True,
-                    "camping_tents": 50,
-                    "camping_rv": 10,
-                    "kitchen_size": "Large",
-                    "kitchen_sq_ft": 1200,
-                    "kitchen_stove_burners": 8,
-                    "kitchen_ovens": 4,
-                    "kitchen_3bay_sinks": 2,
-                    "kitchen_prep_tables": 4,
-                    "kitchen_garbage_cans": 6,
-                    "kitchen_fridge_household": 1,
-                    "kitchen_freezer_household": 1,
-                    "ada_ramps": True,
-                    "ada_parking": True,
-                    "ada_parking_count": 4,
-                    "ada_bathrooms": True,
-                    "ada_bathroom_count": 2,
-                    "site_fee": 1200.0,
-                    "beds_top_qty": 20,
-                    "beds_top_price": 5.0,
-                    "beds_bot_qty": 20,
-                    "beds_bot_price": 10.0
-                }
-            }
+                st.warning("Database Disconnected.")
         
-        # Always include Select Option
         options = ["Select a Site..."] + list(available_sites.keys())
         site_choice = st.selectbox("Load Known Site", options)
         
@@ -432,17 +391,14 @@ def main():
                 st.success(f"Loaded {site_choice}")
         
         st.divider()
-        
-        # 3. Upload JSON
         uploaded = st.file_uploader("Upload Bid JSON", type="json")
         if uploaded:
             data = json.load(uploaded)
             bid.load_data(data)
             st.success("Bid JSON Loaded")
 
-    # --- MAIN FORM ---
+    # --- MAIN FORM (Calculator) ---
     
-    # 1. Event Info
     st.subheader("1. Event Details")
     c1, c2 = st.columns(2)
     bid.event_name = c1.text_input("Event Name", bid.event_name)
@@ -453,7 +409,6 @@ def main():
     bid.end_date = d2.date_input("End Date", bid.end_date)
     bid.is_single_day = d3.checkbox("Single Day Event?", bid.is_single_day)
 
-    # 2. Staff
     st.subheader("2. Staffing")
     s1, s2 = st.columns(2)
     with s1:
@@ -463,23 +418,18 @@ def main():
         st.caption("Feast Stewards")
         for i in range(2): bid.feast_stewards[i] = st.text_input(f"Feastcrat {i+1}", bid.feast_stewards[i], key=f"fs{i}")
 
-    # 3. Facilities
     st.markdown("---")
     st.subheader("3. Site Facilities")
-    
     with st.expander("Kitchen Specs", expanded=True):
         k1, k2, k3, k4 = st.columns(4)
         bid.kitchen_size = k1.selectbox("Kitchen Size", ["None", "Small", "Medium", "Large"], index=0)
-        # Using step=1 to fix minus buttons
         bid.kitchen_sq_ft = k2.number_input("Sq Ft", value=int(bid.kitchen_sq_ft), step=10)
         bid.kitchen_stove_burners = k3.number_input("Burners", value=int(bid.kitchen_stove_burners), step=1)
         bid.kitchen_ovens = k4.number_input("Ovens", value=int(bid.kitchen_ovens), step=1)
-        
         k5, k6, k7 = st.columns(3)
         bid.kitchen_3bay_sinks = k5.number_input("3-Bay Sinks", value=int(bid.kitchen_3bay_sinks), step=1)
         bid.kitchen_prep_tables = k6.number_input("Prep Tables", value=int(bid.kitchen_prep_tables), step=1)
         bid.kitchen_garbage_cans = k7.number_input("Garbage Cans", value=int(bid.kitchen_garbage_cans), step=1)
-        
         st.caption("Household Cold Storage")
         k8, k9 = st.columns(2)
         bid.kitchen_fridge_household = k8.number_input("Household Fridges", value=int(bid.kitchen_fridge_household), step=1)
@@ -490,26 +440,20 @@ def main():
         bid.ada_ramps = a1.checkbox("Ramps Available", bid.ada_ramps)
         bid.ada_parking = a2.checkbox("ADA Parking", bid.ada_parking)
         bid.ada_bathrooms = a3.checkbox("ADA Bathrooms", bid.ada_bathrooms)
-        
         a4, a5 = st.columns(2)
         bid.ada_parking_count = a4.number_input("Count of ADA Spots", value=int(bid.ada_parking_count), step=1)
         bid.ada_bathroom_count = a5.number_input("Count of ADA Stalls", value=int(bid.ada_bathroom_count), step=1)
 
-    # 4. Financials
     st.markdown("---")
     st.subheader("4. Financials")
-    
-    # ROW 1: Site and NMS
     f1, f2, f3 = st.columns(3)
     bid.site_fee = f1.number_input("Site Rental Fee (Fixed)", value=float(bid.site_fee), min_value=0.0, step=10.0)
     bid.site_variable_cost = f2.number_input("Per Person Site Cost", value=float(bid.site_variable_cost), min_value=0.0, step=0.5)
     bid.nms_surcharge = f3.number_input("Non-Member Surcharge (NMS)", value=float(bid.nms_surcharge), min_value=0.0, step=1.0)
-
-    # ROW 2: Gate Prices with NMS Calc
+    
     gp1, gp2, gp3, gp4 = st.columns(4)
     bid.ticket_weekend_member = gp1.number_input("Adult Member Price", value=float(bid.ticket_weekend_member), min_value=0.0, step=1.0)
     gp2.metric("Adult Non-Member", f"${bid.ticket_weekend_member + bid.nms_surcharge:.2f}")
-    
     bid.ticket_daytrip_member = gp3.number_input("Daytrip Member Price", value=float(bid.ticket_daytrip_member), min_value=0.0, step=1.0)
     gp4.metric("Daytrip Non-Member", f"${bid.ticket_daytrip_member + bid.nms_surcharge:.2f}")
     
@@ -519,7 +463,6 @@ def main():
     bid.feast_cost_per_person = fb2.number_input("Feast Food Cost", value=float(bid.feast_cost_per_person), min_value=0.0, step=0.5)
     bid.feast_capacity = fb3.number_input("Feast Max Cap.", value=int(bid.feast_capacity), step=1)
     
-    # BEDS UI (Top/Bottom Split)
     st.write("**Cabin / Lodging Configuration**")
     b1, b2, b3, b4 = st.columns(4)
     bid.beds_top_qty = b1.number_input("Qty: Top Bunks", value=int(bid.beds_top_qty), step=1)
@@ -527,7 +470,6 @@ def main():
     bid.beds_bot_qty = b3.number_input("Qty: Bottom Bunks", value=int(bid.beds_bot_qty), step=1)
     bid.beds_bot_price = b4.number_input("Price: Bottom ($)", value=float(bid.beds_bot_price), min_value=0.0, step=1.0)
 
-    # 5. Expenses
     st.markdown("---")
     st.subheader("5. Operational Expenses")
     e_col1, e_col2, e_col3 = st.columns([2, 1, 1])
@@ -536,26 +478,21 @@ def main():
     if e_col3.button("Add"):
         if new_exp_name:
             bid.expenses[new_exp_name] = {"projected": new_exp_cost, "actual": 0.0}
-    
     if bid.expenses:
         st.write(bid.expenses)
 
-    # 6. Results
     st.markdown("---")
     st.subheader("📊 Projections")
-    
     p1, p2, p3 = st.columns(3)
     proj_wk = p1.number_input("Proj. Weekend Heads", value=100, step=10)
     proj_dt = p2.number_input("Proj. Daytrip Heads", value=20, step=5)
     proj_fst = p3.number_input("Proj. Feast Eaters", value=50, step=5)
-    
     p4, p5 = st.columns(2)
     sold_top = p4.number_input(f"Proj. Top Beds Sold (Max {bid.beds_top_qty})", value=0, max_value=max(0, bid.beds_top_qty), step=1)
     sold_bot = p5.number_input(f"Proj. Bot Beds Sold (Max {bid.beds_bot_qty})", value=0, max_value=max(0, bid.beds_bot_qty), step=1)
     
     results = bid.calculate_projection(proj_wk, proj_dt, proj_fst, sold_top, sold_bot)
     
-    # TARGET PRICE BOX
     if results['target_be_price'] > 0:
         st.info(f"💡 **Target Price:** To exactly break even with {results['total_attendees']} attendees, your Member Ticket Price must be at least: **${results['target_be_price']:.2f}**")
 
@@ -567,52 +504,67 @@ def main():
     with st.expander("Detailed Financial Breakdown"):
         st.json(results)
 
-    # 7. Exports
     st.markdown("---")
     st.subheader("💾 Save & Submit")
     ex1, ex2, ex3 = st.columns(3)
-    
     pdf_bytes = export_to_pdf(bid, results)
     ex1.download_button("Download PDF Report", pdf_bytes, "bid_report.pdf", "application/pdf")
-    
     json_str = json.dumps(bid.to_dict(), indent=4)
     ex2.download_button("Download Save File (.json)", json_str, "bid_save.json", "application/json")
-
-    # CSV EXPORT
     flat_data = bid.__dict__.copy()
     if "expenses" in flat_data: del flat_data["expenses"] 
     df = pd.DataFrame([flat_data])
     csv = df.to_csv(index=False).encode('utf-8')
     ex3.download_button("Download CSV (For Sheets)", csv, "bid_spreadsheet.csv", "text/csv")
 
-    # --- SAVE TO DATABASE (PASSWORD PROTECTED) ---
-    st.markdown("---")
-    st.subheader("☁️ Update Database")
-    
-    if st.checkbox("I want to save this site configuration to the database"):
-        c_name, c_pass = st.columns(2)
-        db_key_name = c_name.text_input("Site Name to Save As (Unique)", bid.site_name)
-        input_pass = c_pass.text_input("Admin Password", type="password")
-        
-        # VALIDATION LOGIC
-        if st.button("Save Site to MySQL"):
-            # Check secrets for admin password
-            correct_pass = st.secrets["general"]["admin_password"] if "general" in st.secrets else "Meridies2024"
-            
-            if input_pass != correct_pass:
-                st.error("⛔ Incorrect Password. You do not have permission to write to the database.")
-            elif not db_key_name.strip():
-                st.error("⚠️ Error: Site Name cannot be empty.")
-            elif bid.site_fee < 0:
-                st.error("⚠️ Error: Site Fee cannot be negative.")
-            else:
-                success = save_site_to_db(db_key_name, bid)
-                if success:
-                    st.success(f"Successfully saved '{db_key_name}' to the database!")
-                    # FORCE REFRESH to update the dropdown list immediately
-                    st.rerun() 
+    # ==========================================
+    # ADMIN SECTIONS (HIDDEN UNLESS LOGGED IN)
+    # ==========================================
+    if st.session_state.is_admin:
+        st.markdown("---")
+        st.header("👑 Admin Controls")
+        st.info("You are in Admin Mode. You can Save, Archive, and Delete sites.")
+
+        # 1. SAVE/UPDATE
+        with st.expander("☁️ Save/Update Current Site", expanded=True):
+            db_key_name = st.text_input("Site Name to Save As (Unique)", bid.site_name)
+            if st.button("Save Site to Database"):
+                if not db_key_name.strip():
+                    st.error("⚠️ Site Name required.")
                 else:
-                    st.error("Failed to save. Check database connection.")
+                    if save_site_to_db(db_key_name, bid):
+                        st.success(f"Saved '{db_key_name}'!")
+                        st.cache_data.clear()
+                        st.rerun()
+
+        # 2. MANAGE (ARCHIVE/DELETE)
+        with st.expander("🗑️ Manage Existing Sites"):
+            # Load ALL sites (including archived)
+            all_sites = load_sites_from_db(include_archived=True)
+            if not all_sites:
+                st.write("No sites to manage.")
+            else:
+                manage_choice = st.selectbox("Select Site to Manage", list(all_sites.keys()))
+                selected_data = all_sites[manage_choice]
+                
+                is_archived = selected_data.get("archived", False)
+                status_text = "🔴 ARCHIVED (Hidden)" if is_archived else "🟢 ACTIVE (Visible)"
+                st.markdown(f"**Current Status:** {status_text}")
+                
+                mc1, mc2 = st.columns(2)
+                btn_label = "Un-Archive (Make Visible)" if is_archived else "Archive (Hide Site)"
+                
+                if mc1.button(btn_label):
+                    if toggle_archive_status(manage_choice, selected_data, archive=not is_archived):
+                        st.success("Status updated.")
+                        st.cache_data.clear()
+                        st.rerun()
+                
+                if mc2.button("❌ DELETE PERMANENTLY"):
+                    if delete_site_permanently(manage_choice):
+                        st.success("Deleted.")
+                        st.cache_data.clear()
+                        st.rerun()
 
 if __name__ == "__main__":
     main()
