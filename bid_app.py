@@ -11,7 +11,7 @@ import pandas as pd
 # ReportLab imports for PDF generation
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib import colors
 
 # ==========================================
@@ -37,23 +37,16 @@ def get_db_connection():
 def load_sites_from_db(include_archived=False):
     conn = get_db_connection()
     if not conn: return {}
-    
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT site_name, json_data FROM sites")
         results = cursor.fetchall()
         conn.close()
-        
         sites = {}
         for row in results:
             data = row['json_data']
-            if isinstance(data, str):
-                data = json.loads(data)
-            
-            is_archived = data.get("archived", False)
-            if not include_archived and is_archived:
-                continue
-                
+            if isinstance(data, str): data = json.loads(data)
+            if not include_archived and data.get("archived", False): continue
             sites[row['site_name']] = data
         return sites
     except Exception:
@@ -64,18 +57,34 @@ def save_site_to_db(site_name, bid_object):
     conn = get_db_connection()
     if not conn: return False
     
-    cursor = conn.cursor()
-    data_dict = bid_object.to_dict()
-    data_dict["archived"] = False 
+    # FILTER DATA: Only save SITE info, not EVENT info (privacy)
+    full_data = bid_object.to_dict()
     
-    json_str = json.dumps(data_dict)
+    # Define keys that belong to the SITE, not the EVENT
+    site_keys = [
+        "site_name", "site_address", "site_contact_name", "site_contact_info", "max_capacity",
+        "ada_ramps", "ada_ramps_count", "ada_showers", "ada_showers_count", 
+        "ada_bathrooms", "ada_bathrooms_count", "ada_parking", "ada_parking_count", "ada_comment",
+        "showers_count", "bathrooms_count", "ground_fires", "ground_fires_restrictions", "alcohol_policy",
+        "camping_modern", "camping_period", 
+        "cabins_total_beds", "cabins_top_bunks", "cabins_bot_bunks", "cabins_per_cabin",
+        "classrooms", "fighting_indoors", "fighting_outdoors", "equestrian_area", "parking_comment",
+        "feast_hall_indoor", "feast_pavilion_outdoor",
+        "kitchen_access", "kitchen_sq_ft", "kitchen_burners", "kitchen_sinks", "kitchen_prep_tables",
+        "kitchen_hobart", "kitchen_warming_table", "kitchen_walkin_fridge", "kitchen_walkin_freezer",
+        "kitchen_household_fridge_count", "kitchen_household_freezer_count", "kitchen_ice_maker",
+        "site_cost", "site_deposit_refundable", "top_bunk_cost", "bot_bunk_cost"
+    ]
     
-    query = """
-    INSERT INTO sites (site_name, json_data) 
-    VALUES (%s, %s) 
-    ON DUPLICATE KEY UPDATE json_data = %s
-    """
+    # Create a clean dictionary with only site data
+    site_data = {k: full_data.get(k) for k in site_keys}
+    site_data["archived"] = False
+    
+    json_str = json.dumps(site_data)
+    
     try:
+        cursor = conn.cursor()
+        query = "INSERT INTO sites (site_name, json_data) VALUES (%s, %s) ON DUPLICATE KEY UPDATE json_data = %s"
         cursor.execute(query, (site_name, json_str, json_str))
         conn.commit()
         conn.close()
@@ -88,34 +97,29 @@ def save_site_to_db(site_name, bid_object):
 def toggle_archive_status(site_name, current_data, archive=True):
     conn = get_db_connection()
     if not conn: return False
-    
     current_data["archived"] = archive
     json_str = json.dumps(current_data)
-    
     try:
         cursor = conn.cursor()
         cursor.execute("UPDATE sites SET json_data = %s WHERE site_name = %s", (json_str, site_name))
         conn.commit()
         conn.close()
         return True
-    except Exception as e:
-        st.error(f"Archive Failed: {e}")
-        if conn: conn.close()
+    except Exception:
+        conn.close()
         return False
 
 def delete_site_permanently(site_name):
     conn = get_db_connection()
     if not conn: return False
-    
     try:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM sites WHERE site_name = %s", (site_name,))
         conn.commit()
         conn.close()
         return True
-    except Exception as e:
-        st.error(f"Delete Failed: {e}")
-        if conn: conn.close()
+    except Exception:
+        conn.close()
         return False
 
 # ==========================================
@@ -123,223 +127,268 @@ def delete_site_permanently(site_name):
 # ==========================================
 @dataclass
 class EventBid:
-    origin_kingdom: str = "Meridies"
-    group_name: str = ""
-    event_type: str = "Local"  
+    # --- EVENT HEADER ---
     event_name: str = ""
-    bid_for_year: int = datetime.now().year
-    
-    site_name: str = ""
-    site_address: str = ""
+    event_type: str = "Local" # Kingdom or Local
+    kingdom_event_type: str = "" # specific dropdown if Kingdom
     start_date: date = date.today()
-    start_time: time = time(17, 0)
     end_date: date = date.today()
-    end_time: time = time(12, 0)
-    gate_time: time = time(17, 0)
     is_single_day: bool = False
     
-    event_stewards: List[str] = field(default_factory=lambda: ["", "", "", ""])
-    feast_stewards: List[str] = field(default_factory=lambda: ["", "", ""])
+    # Stewards (Names + Private Contact Info)
+    # Stored as list of dicts: [{"name": "...", "contact": "..."}]
+    event_stewards: List[Dict] = field(default_factory=lambda: [{"name": "", "contact": ""} for _ in range(2)])
+    feast_stewards: List[Dict] = field(default_factory=lambda: [{"name": "", "contact": ""} for _ in range(2)])
+
+    # --- SITE INFO ---
+    site_name: str = ""
+    site_address: str = ""
+    site_contact_name: str = ""
+    site_contact_info: str = ""
+    max_capacity: int = 0
     
-    parking_spaces: int = 0
-    bathrooms_count: int = 0
+    # --- AMENITIES ---
+    # ADA
     ada_ramps: bool = False
+    ada_ramps_count: int = 0
+    ada_showers: bool = False
+    ada_showers_count: int = 0
+    ada_bathrooms: bool = False
+    ada_bathrooms_count: int = 0
     ada_parking: bool = False
     ada_parking_count: int = 0
-    ada_bathrooms: bool = False
-    ada_bathroom_count: int = 0
-
-    kitchen_size: str = "None"
+    ada_comment: str = ""
+    
+    # General
+    showers_count: int = 0
+    bathrooms_count: int = 0
+    ground_fires: bool = False
+    ground_fires_restrictions: str = ""
+    alcohol_policy: str = "Dry" # Dry, Wet, Discreetly Wet
+    
+    camping_modern: bool = False
+    camping_period: bool = False
+    
+    # Cabins
+    cabins_available: bool = False
+    cabins_total_beds: int = 0
+    cabins_top_bunks: int = 0
+    cabins_bot_bunks: int = 0
+    cabins_per_cabin: int = 0
+    
+    # Classrooms (List of dicts: [{"capacity": 30, "av": True}])
+    classrooms: List[Dict] = field(default_factory=list)
+    
+    # Areas
+    fighting_indoors: bool = False
+    fighting_outdoors: bool = False
+    equestrian_area: bool = False
+    parking_comment: str = ""
+    feast_hall_indoor: bool = False
+    feast_pavilion_outdoor: bool = False
+    
+    # Kitchen
+    kitchen_access: bool = False
     kitchen_sq_ft: int = 0
-    kitchen_stove_burners: int = 0
-    kitchen_ovens: int = 0
-    kitchen_3bay_sinks: int = 0
+    kitchen_burners: int = 0
+    kitchen_sinks: int = 0
     kitchen_prep_tables: int = 0
-    kitchen_garbage_cans: int = 0
-    kitchen_fridge_household: int = 0
-    kitchen_freezer_household: int = 0
-    kitchen_amenities: List[str] = field(default_factory=list)
-
-    camping_allowed: bool = False
-    camping_tents: int = 0
-    camping_rv: int = 0
+    kitchen_hobart: bool = False
+    kitchen_warming_table: bool = False
+    kitchen_walkin_fridge: bool = False
+    kitchen_walkin_freezer: bool = False
+    kitchen_household_fridge_count: int = 0
+    kitchen_household_freezer_count: int = 0
+    kitchen_ice_maker: bool = False
     
-    site_fee: float = 0.0 
-    site_variable_cost: float = 0.0 
+    # --- EXPENSES (Budget vs Actual) ---
+    site_deposit: float = 0.0
+    site_deposit_refundable: bool = False
+    site_deposit_deadline: str = ""
     
-    ticket_weekend_member: float = 0.0
-    ticket_daytrip_member: float = 0.0
+    site_cost: float = 0.0 # Rent minus deposit
+    
+    # Standard Budget Items
+    budget_tokens: float = 0.0
+    actual_tokens: float = 0.0
+    
+    budget_decor: float = 0.0
+    actual_decor: float = 0.0
+    
+    budget_booklet: float = 0.0
+    actual_booklet: float = 0.0
+    
+    budget_prizes: float = 0.0
+    actual_prizes: float = 0.0
+    
+    # Dynamic Additional Lines [{"item": "Name", "budget": 0.0, "actual": 0.0}]
+    additional_expenses: List[Dict] = field(default_factory=list)
+    
+    # --- INCOME ---
     nms_surcharge: float = 10.0
+    daytrip_cost: float = 0.0
+    weekend_cost: float = 0.0
     
-    feast_fee: float = 0.0
     feast_cost_per_person: float = 0.0
-    feast_capacity: int = 0
+    feast_seats: int = 0
     
-    beds_top_qty: int = 0
-    beds_top_price: float = 0.0
-    beds_bot_qty: int = 0
-    beds_bot_price: float = 0.0
-
-    expenses: Dict[str, Dict] = field(default_factory=dict)
+    top_bunk_cost: float = 0.0
+    bot_bunk_cost: float = 0.0
+    
+    # --- PROJECTIONS ---
+    proj_attendees: int = 100
+    proj_feast_sold: int = 50
+    proj_top_sold: int = 0
+    proj_bot_sold: int = 0
 
     def to_dict(self):
         return json.loads(json.dumps(self, default=lambda o: o.isoformat() if isinstance(o, (date, time)) else o.__dict__))
 
-    def load_data(self, data_dict: dict):
-        for key, value in data_dict.items():
-            if hasattr(self, key):
-                if key in ["start_date", "end_date"] and isinstance(value, str):
-                    try: setattr(self, key, date.fromisoformat(value))
-                    except: pass
-                elif key in ["start_time", "end_time", "gate_time"] and isinstance(value, str):
-                    try: setattr(self, key, time.fromisoformat(value))
+    def load_data(self, data: dict):
+        for k, v in data.items():
+            if hasattr(self, k):
+                if k in ["start_date", "end_date"] and isinstance(v, str):
+                    try: setattr(self, k, date.fromisoformat(v))
                     except: pass
                 else:
-                    setattr(self, key, value)
+                    setattr(self, k, v)
 
     def apply_site_profile(self, profile):
         if not profile: return
-        site_keys = [
-            "site_name", "site_address", "parking_spaces", "bathrooms_count",
-            "camping_allowed", "camping_tents", "camping_rv",
-            "kitchen_size", "kitchen_sq_ft", "kitchen_stove_burners",
-            "kitchen_ovens", "kitchen_3bay_sinks", "kitchen_prep_tables",
-            "kitchen_garbage_cans", "kitchen_fridge_household", "kitchen_freezer_household",
-            "ada_ramps", "ada_parking", "ada_parking_count", "ada_bathrooms",
-            "ada_bathroom_count", "site_fee", 
-            "beds_top_qty", "beds_top_price", "beds_bot_qty", "beds_bot_price"
-        ]
-        for key in site_keys:
-            if key in profile:
-                setattr(self, key, profile[key])
+        for k, v in profile.items():
+            if hasattr(self, k):
+                setattr(self, k, v)
 
-    def get_total_fixed_costs(self, mode="projected"):
-        ops_total = sum(item.get(mode, 0) for item in self.expenses.values())
-        return self.site_fee + ops_total
-
-    def calculate_projection(self, attend_weekend, attend_daytrip, feast_count, sold_top, sold_bot, mode="projected"):
-        fixed_costs = self.get_total_fixed_costs(mode)
+    def calculate_financials(self):
+        # 1. EXPENSES
+        # Fixed
+        total_budget_expense = self.site_cost + self.budget_tokens + self.budget_decor + self.budget_booklet + self.budget_prizes
+        total_actual_expense = self.site_cost + self.actual_tokens + self.actual_decor + self.actual_booklet + self.actual_prizes
         
-        rev_weekend = self.ticket_weekend_member * attend_weekend
-        rev_daytrip = self.ticket_daytrip_member * attend_daytrip
-        total_gate_revenue = rev_weekend + rev_daytrip
+        # Add dynamic lines
+        for line in self.additional_expenses:
+            total_budget_expense += float(line.get("budget", 0.0))
+            total_actual_expense += float(line.get("actual", 0.0))
+            
+        # Add Feast (Siloed Expense)
+        feast_budget_expense = self.feast_cost_per_person * self.proj_feast_sold
+        # Note: We assume actual feast expense matches projection for the budget tool unless tracked elsewhere
+        # Ideally, you'd have an "Actual Feast Cost" field, but for now we use the calculated one
         
-        total_attendees = attend_weekend + attend_daytrip
-        total_variable = self.site_variable_cost * total_attendees
+        # 2. INCOME
+        # Gate (Excluding NMS)
+        gate_income = (self.weekend_cost * self.proj_attendees) # Simplified: Assuming all are weekend for general projection
         
-        gate_net = total_gate_revenue - fixed_costs - total_variable
+        # Feast Income
+        feast_income = self.feast_cost_per_person * self.proj_feast_sold # Note: Ticket price usually covers food cost. 
+        # Wait, usually Ticket Price > Food Cost. 
+        # Correct logic: Feast Budget (Expense) is siloed. Feast Revenue is siloed.
         
-        feast_rev = self.feast_fee * feast_count
-        feast_exp = self.feast_cost_per_person * feast_count
-        feast_net = feast_rev - feast_exp
+        # Lodging Income
+        lodging_income = (self.top_bunk_cost * self.proj_top_sold) + (self.bot_bunk_cost * self.proj_bot_sold)
         
-        bed_rev = (self.beds_top_price * sold_top) + (self.beds_bot_price * sold_bot)
-        bed_net = bed_rev
+        # 3. TOTALS
+        # Total Revenue (Gate + Lodging). Feast is usually wash or slight profit, handled separately? 
+        # Let's add Feast Revenue to Total Revenue for simplicity.
         
-        total_net = gate_net + feast_net + bed_net
+        total_revenue = gate_income + lodging_income # + Feast Revenue if ticket price exists?
+        # In this model, "Feast Cost per person" usually means the budget allocated. 
+        # Often Feast Ticket Price == Feast Cost Per Person (Break even feast).
         
-        margin = self.ticket_weekend_member - self.site_variable_cost
+        net_profit_budget = total_revenue - (total_budget_expense + feast_budget_expense)
+        net_profit_actual = total_revenue - (total_actual_expense + feast_budget_expense) 
         
-        if margin <= 0:
-            if fixed_costs == 0 and margin == 0:
-                break_even = 0 
-            else:
-                break_even = "Price < Variable Cost"
+        # Splits
+        kingdom_share = 0.0
+        group_share = 0.0
+        
+        if self.event_type == "Kingdom" and net_profit_actual > 0:
+            kingdom_share = net_profit_actual * 0.5
+            group_share = net_profit_actual * 0.5
         else:
-            break_even = math.ceil(fixed_costs / margin)
-
-        if total_attendees > 0:
-            target_be_price = (fixed_costs / total_attendees) + self.site_variable_cost
-        else:
-            target_be_price = 0.0
+            group_share = net_profit_actual
 
         return {
-            "total_attendees": total_attendees,
-            "total_revenue": total_gate_revenue + feast_rev + bed_rev,
-            "total_expense": fixed_costs + total_variable + feast_exp,
-            "gate_net": gate_net,
-            "feast_net": feast_net,
-            "bed_net": bed_net,
-            "total_net": total_net,
-            "break_even": break_even,
-            "target_be_price": target_be_price
+            "total_budget_expense": total_budget_expense + feast_budget_expense,
+            "total_actual_expense": total_actual_expense + feast_budget_expense,
+            "total_revenue": total_revenue + feast_budget_expense, # Assuming rev = cost for feast
+            "net_profit_budget": net_profit_budget,
+            "net_profit_actual": net_profit_actual,
+            "kingdom_share": kingdom_share,
+            "group_share": group_share,
+            "feast_budget": feast_budget_expense
         }
 
 # ==========================================
-# PDF GENERATION LOGIC
+# PDF GENERATION
 # ==========================================
-def export_to_pdf(bid: EventBid, projection: dict):
+def create_pdf(bid: EventBid, financials: dict):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=LETTER, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
     styles = getSampleStyleSheet()
     elements = []
     
-    elements.append(Paragraph("Kingdom of Meridies Event Bid", styles["Heading1"]))
+    # Title
+    elements.append(Paragraph("Kingdom of Meridies Event Bid", styles['Heading1']))
     elements.append(Spacer(1, 12))
     
-    elements.append(Paragraph(f"<b>Event:</b> {bid.event_name} ({bid.event_type})", styles["Normal"]))
-    elements.append(Paragraph(f"<b>Location:</b> {bid.site_name} - {bid.site_address}", styles["Normal"]))
+    # Event Info
+    elements.append(Paragraph(f"<b>Event:</b> {bid.event_name}", styles['Normal']))
+    elements.append(Paragraph(f"<b>Date:</b> {bid.start_date} to {bid.end_date}", styles['Normal']))
+    elements.append(Paragraph(f"<b>Type:</b> {bid.event_type} ({bid.kingdom_event_type if bid.event_type=='Kingdom' else ''})", styles['Normal']))
     elements.append(Spacer(1, 12))
     
-    elements.append(Paragraph("<b>Kitchen Facilities</b>", styles["Heading3"]))
-    k_text = f"Size: {bid.kitchen_size} ({bid.kitchen_sq_ft} sq ft)<br/>"
-    k_text += f"Equip: {bid.kitchen_stove_burners} Burners, {bid.kitchen_ovens} Ovens<br/>"
-    k_text += f"Prep: {bid.kitchen_3bay_sinks} Sinks, {bid.kitchen_prep_tables} Tables<br/>"
-    k_text += f"Household Cold: {bid.kitchen_fridge_household} Fridges, {bid.kitchen_freezer_household} Freezers"
-    elements.append(Paragraph(k_text, styles["Normal"]))
+    # Stewards
+    elements.append(Paragraph("<b>Event Stewards:</b>", styles['Heading3']))
+    for s in bid.event_stewards:
+        if s['name']: elements.append(Paragraph(f"{s['name']} - {s['contact']}", styles['Normal']))
+        
+    elements.append(Spacer(1, 6))
+    elements.append(Paragraph("<b>Feast Stewards:</b>", styles['Heading3']))
+    for s in bid.feast_stewards:
+        if s['name']: elements.append(Paragraph(f"{s['name']} - {s['contact']}", styles['Normal']))
+        
     elements.append(Spacer(1, 12))
     
-    elements.append(Paragraph("<b>Gate Pricing</b>", styles["Heading3"]))
-    p_text = f"Weekend Member: ${bid.ticket_weekend_member:.2f} (Non-Member: ${bid.ticket_weekend_member + bid.nms_surcharge:.2f})<br/>"
-    p_text += f"Daytrip Member: ${bid.ticket_daytrip_member:.2f} (Non-Member: ${bid.ticket_daytrip_member + bid.nms_surcharge:.2f})<br/>"
-    p_text += f"NMS Surcharge: ${bid.nms_surcharge:.2f}"
-    elements.append(Paragraph(p_text, styles["Normal"]))
-    elements.append(Spacer(1, 12))
-
-    elements.append(Paragraph("<b>Lodging Stats</b>", styles["Heading3"]))
-    l_text = f"Top Bunks: {bid.beds_top_qty} (${bid.beds_top_price:.2f})<br/>"
-    l_text += f"Bottom Bunks: {bid.beds_bot_qty} (${bid.beds_bot_price:.2f})"
-    elements.append(Paragraph(l_text, styles["Normal"]))
+    # Site Info
+    elements.append(Paragraph(f"<b>Site:</b> {bid.site_name}", styles['Heading3']))
+    elements.append(Paragraph(f"Address: {bid.site_address}", styles['Normal']))
+    elements.append(Paragraph(f"Contact: {bid.site_contact_name} ({bid.site_contact_info})", styles['Normal']))
     elements.append(Spacer(1, 12))
     
-    elements.append(Paragraph("<b>Financial Projection</b>", styles["Heading3"]))
+    # Amenities Summary
+    elements.append(Paragraph("<b>Amenities Snapshot</b>", styles['Heading3']))
+    amenities = []
+    if bid.ada_ramps: amenities.append(f"ADA Ramps ({bid.ada_ramps_count})")
+    if bid.ada_bathrooms: amenities.append(f"ADA Bathrooms ({bid.ada_bathrooms_count})")
+    if bid.alcohol_policy != "Dry": amenities.append(f"Alcohol: {bid.alcohol_policy}")
+    if bid.kitchen_access: amenities.append("Kitchen Access")
+    if bid.cabins_available: amenities.append(f"Cabins ({bid.cabins_total_beds} beds)")
     
-    be_val = projection['break_even']
-    be_str = f"{be_val} Attendees" if isinstance(be_val, (int, float)) else str(be_val)
-
+    elements.append(Paragraph(", ".join(amenities), styles['Normal']))
+    
+    if bid.ada_comment:
+        elements.append(Paragraph(f"<i>ADA Notes: {bid.ada_comment}</i>", styles['Normal']))
+        
+    elements.append(Spacer(1, 12))
+    
+    # Financials
+    elements.append(Paragraph("<b>Financial Summary</b>", styles['Heading3']))
     data = [
-        ["Category", "Amount"],
-        ["Total Revenue", f"${projection['total_revenue']:.2f}"],
-        ["Total Expense", f"${projection['total_expense']:.2f}"],
-        ["NET PROFIT", f"${projection['total_net']:.2f}"],
-        ["Gate Break Even", be_str]
+        ["Item", "Budgeted", "Actual"],
+        ["Total Revenue", f"${financials['total_revenue']:.2f}", "-"],
+        ["Total Expenses", f"${financials['total_budget_expense']:.2f}", f"${financials['total_actual_expense']:.2f}"],
+        ["NET PROFIT", f"${financials['net_profit_budget']:.2f}", f"${financials['net_profit_actual']:.2f}"]
     ]
-    t = Table(data, colWidths=[200, 150])
+    
+    t = Table(data, colWidths=[200, 100, 100])
     t.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('GRID', (0,0), (-1,-1), 1, colors.black),
-        ('FONTNAME', (0,-2), (-1,-1), 'Helvetica-Bold'),
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
     ]))
     elements.append(t)
     
-    # Add Expense Breakdown to PDF as well
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph("<b>Operational Expenses</b>", styles["Heading3"]))
-    
-    exp_data = [["Item", "Projected Cost"]]
-    for item, val in bid.expenses.items():
-        exp_data.append([item, f"${val['projected']:.2f}"])
-    
-    if len(exp_data) > 1:
-        t_exp = Table(exp_data, colWidths=[250, 100])
-        t_exp.setStyle(TableStyle([
-            ('GRID', (0,0), (-1,-1), 1, colors.black),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ]))
-        elements.append(t_exp)
-    else:
-        elements.append(Paragraph("No operational expenses listed.", styles["Normal"]))
-
     doc.build(elements)
     buffer.seek(0)
     return buffer
@@ -350,257 +399,368 @@ def export_to_pdf(bid: EventBid, projection: dict):
 def main():
     st.set_page_config(page_title="Meridies Bidder", layout="wide", page_icon=KINGDOM_LOGO_URL)
     
-    # Initialize Session State
-    if "bid" not in st.session_state:
-        st.session_state.bid = EventBid()
-    if "is_admin" not in st.session_state:
-        st.session_state.is_admin = False
-        
+    # Init State
+    if "bid" not in st.session_state: st.session_state.bid = EventBid()
+    if "is_admin" not in st.session_state: st.session_state.is_admin = False
     bid = st.session_state.bid
 
-    col_logo, col_title = st.columns([1, 6])
-    with col_logo: st.image(KINGDOM_LOGO_URL, width=80)
-    with col_title: 
-        st.title("Kingdom of Meridies Event Bidder")
-        role = "Admin Mode" if st.session_state.is_admin else "Public Mode"
-        st.caption(f"Budgeting Tool • {role}")
+    # Header
+    col1, col2 = st.columns([1, 6])
+    with col1: st.image(KINGDOM_LOGO_URL, width=80)
+    with col2: 
+        st.title("Kingdom of Meridies Event Bid Tool")
+        st.caption("Budgeting, Site Database, and Reporting System")
 
-    # --- SIDEBAR: AUTH & DATABASE ---
+    # --- SIDEBAR ---
     with st.sidebar:
-        # LOGIN SECTION
+        # Admin Login
         if not st.session_state.is_admin:
-            with st.expander("🔐 Admin Login", expanded=True):
-                admin_pass = st.text_input("Password", type="password")
+            with st.expander("🔐 Admin Access"):
+                pwd = st.text_input("Password", type="password")
                 if st.button("Login"):
-                    correct_pass = st.secrets["general"]["admin_password"] if "general" in st.secrets else "Meridies2024"
-                    if admin_pass == correct_pass:
+                    # Check secrets, fallback for testing
+                    real_pass = st.secrets["general"]["admin_password"] if "general" in st.secrets else "Meridies2024"
+                    if pwd == real_pass:
                         st.session_state.is_admin = True
                         st.rerun()
                     else:
-                        st.error("Incorrect Password")
+                        st.error("Wrong Password")
         else:
-            if st.button("🔓 Log Out"):
+            if st.button("Log Out"):
                 st.session_state.is_admin = False
                 st.rerun()
-            st.success("You are logged in as Admin.")
-            st.markdown("---")
-
-        st.header("📂 Database")
-        
-        # Load Sites logic (Always visible)
-        available_sites = load_sites_from_db(include_archived=st.session_state.is_admin)
-        
-        if not available_sites:
-            available_sites = {"Select a Site...": None}
-            if get_db_connection():
-                st.info("Database empty.")
-            else:
-                st.warning("Database Disconnected.")
-        
-        options = ["Select a Site..."] + list(available_sites.keys())
-        site_choice = st.selectbox("Load Known Site", options)
-        
-        if site_choice and site_choice != "Select a Site...":
-            if st.button("Load Site Data"):
-                bid.apply_site_profile(available_sites[site_choice])
-                st.success(f"Loaded {site_choice}")
+            st.success("Admin Mode Active")
         
         st.divider()
-        uploaded = st.file_uploader("Upload Bid JSON", type="json")
-        if uploaded:
-            data = json.load(uploaded)
-            bid.load_data(data)
-            st.success("Bid JSON Loaded")
-
-    # --- MAIN FORM (Calculator) ---
-    
-    st.subheader("1. Event Details")
-    c1, c2 = st.columns(2)
-    bid.event_name = c1.text_input("Event Name", bid.event_name)
-    bid.event_type = c2.selectbox("Type", ["Local", "Kingdom"], index=0 if bid.event_type=="Local" else 1)
-    d1, d2, d3 = st.columns(3)
-    bid.start_date = d1.date_input("Start Date", bid.start_date)
-    bid.end_date = d2.date_input("End Date", bid.end_date)
-    bid.is_single_day = d3.checkbox("Single Day Event?", bid.is_single_day)
-
-    st.subheader("2. Staffing")
-    s1, s2 = st.columns(2)
-    with s1:
-        st.caption("Event Stewards")
-        for i in range(2): bid.event_stewards[i] = st.text_input(f"Autocrat {i+1}", bid.event_stewards[i], key=f"es{i}")
-    with s2:
-        st.caption("Feast Stewards")
-        for i in range(2): bid.feast_stewards[i] = st.text_input(f"Feastcrat {i+1}", bid.feast_stewards[i], key=f"fs{i}")
-
-    st.markdown("---")
-    st.subheader("3. Site Facilities")
-    with st.expander("Kitchen Specs", expanded=True):
-        k1, k2, k3, k4 = st.columns(4)
-        bid.kitchen_size = k1.selectbox("Kitchen Size", ["None", "Small", "Medium", "Large"], index=0)
-        bid.kitchen_sq_ft = k2.number_input("Sq Ft", value=int(bid.kitchen_sq_ft), step=10)
-        bid.kitchen_stove_burners = k3.number_input("Burners", value=int(bid.kitchen_stove_burners), step=1)
-        bid.kitchen_ovens = k4.number_input("Ovens", value=int(bid.kitchen_ovens), step=1)
-        k5, k6, k7 = st.columns(3)
-        bid.kitchen_3bay_sinks = k5.number_input("3-Bay Sinks", value=int(bid.kitchen_3bay_sinks), step=1)
-        bid.kitchen_prep_tables = k6.number_input("Prep Tables", value=int(bid.kitchen_prep_tables), step=1)
-        bid.kitchen_garbage_cans = k7.number_input("Garbage Cans", value=int(bid.kitchen_garbage_cans), step=1)
-        st.caption("Household Cold Storage")
-        k8, k9 = st.columns(2)
-        bid.kitchen_fridge_household = k8.number_input("Household Fridges", value=int(bid.kitchen_fridge_household), step=1)
-        bid.kitchen_freezer_household = k9.number_input("Household Freezers", value=int(bid.kitchen_freezer_household), step=1)
-
-    with st.expander("ADA & Accessibility", expanded=False):
-        a1, a2, a3 = st.columns(3)
-        bid.ada_ramps = a1.checkbox("Ramps Available", bid.ada_ramps)
-        bid.ada_parking = a2.checkbox("ADA Parking", bid.ada_parking)
-        bid.ada_bathrooms = a3.checkbox("ADA Bathrooms", bid.ada_bathrooms)
-        a4, a5 = st.columns(2)
-        bid.ada_parking_count = a4.number_input("Count of ADA Spots", value=int(bid.ada_parking_count), step=1)
-        bid.ada_bathroom_count = a5.number_input("Count of ADA Stalls", value=int(bid.ada_bathroom_count), step=1)
-
-    st.markdown("---")
-    st.subheader("4. Financials")
-    f1, f2, f3 = st.columns(3)
-    bid.site_fee = f1.number_input("Site Rental Fee (Fixed)", value=float(bid.site_fee), min_value=0.0, step=10.0)
-    bid.site_variable_cost = f2.number_input("Per Person Site Cost", value=float(bid.site_variable_cost), min_value=0.0, step=0.5)
-    bid.nms_surcharge = f3.number_input("Non-Member Surcharge (NMS)", value=float(bid.nms_surcharge), min_value=0.0, step=1.0)
-    
-    gp1, gp2, gp3, gp4 = st.columns(4)
-    bid.ticket_weekend_member = gp1.number_input("Adult Member Price", value=float(bid.ticket_weekend_member), min_value=0.0, step=1.0)
-    gp2.metric("Adult Non-Member", f"${bid.ticket_weekend_member + bid.nms_surcharge:.2f}")
-    bid.ticket_daytrip_member = gp3.number_input("Daytrip Member Price", value=float(bid.ticket_daytrip_member), min_value=0.0, step=1.0)
-    gp4.metric("Daytrip Non-Member", f"${bid.ticket_daytrip_member + bid.nms_surcharge:.2f}")
-    
-    st.caption("Feast & Beds (Siloed Costs)")
-    fb1, fb2, fb3 = st.columns(3)
-    bid.feast_fee = fb1.number_input("Feast Ticket Price", value=float(bid.feast_fee), min_value=0.0, step=1.0)
-    bid.feast_cost_per_person = fb2.number_input("Feast Food Cost", value=float(bid.feast_cost_per_person), min_value=0.0, step=0.5)
-    bid.feast_capacity = fb3.number_input("Feast Max Cap.", value=int(bid.feast_capacity), step=1)
-    
-    st.write("**Cabin / Lodging Configuration**")
-    b1, b2, b3, b4 = st.columns(4)
-    bid.beds_top_qty = b1.number_input("Qty: Top Bunks", value=int(bid.beds_top_qty), step=1)
-    bid.beds_top_price = b2.number_input("Price: Top ($)", value=float(bid.beds_top_price), min_value=0.0, step=1.0)
-    bid.beds_bot_qty = b3.number_input("Qty: Bottom Bunks", value=int(bid.beds_bot_qty), step=1)
-    bid.beds_bot_price = b4.number_input("Price: Bottom ($)", value=float(bid.beds_bot_price), min_value=0.0, step=1.0)
-
-    # 5. EXPENSES SECTION (UPDATED)
-    st.markdown("---")
-    st.subheader("5. Operational Expenses")
-    
-    # Callback function to add item and clear inputs
-    def add_expense_callback():
-        name = st.session_state["new_exp_name_input"]
-        cost = st.session_state["new_exp_cost_input"]
-        if name:
-            st.session_state.bid.expenses[name] = {"projected": cost, "actual": 0.0}
-            st.session_state["new_exp_name_input"] = ""
-            st.session_state["new_exp_cost_input"] = 0.0
-
-    # Input columns
-    e_col1, e_col2, e_col3 = st.columns([2, 1, 1])
-    e_col1.text_input("New Expense Item", key="new_exp_name_input")
-    e_col2.number_input("Cost", min_value=0.0, step=10.0, key="new_exp_cost_input")
-    e_col3.button("Add Expense", on_click=add_expense_callback)
-
-    # Display List with Delete Buttons
-    if bid.expenses:
-        st.markdown("##### Current Budget Items:")
-        # Header
-        h1, h2, h3 = st.columns([3, 2, 1])
-        h1.markdown("**Item**")
-        h2.markdown("**Cost**")
-        h3.markdown("**Action**")
         
-        # Rows
-        for name, data in list(bid.expenses.items()):
-            c1, c2, c3 = st.columns([3, 2, 1])
-            c1.write(name)
-            c2.write(f"${data['projected']:.2f}")
-            if c3.button("🗑️ Delete", key=f"del_{name}"):
-                del bid.expenses[name]
-                st.rerun()
+        # Load Site
+        active_sites = load_sites_from_db(include_archived=st.session_state.is_admin)
+        options = ["Select a Site..."] + list(active_sites.keys())
+        choice = st.selectbox("Load Known Site", options)
+        if choice != "Select a Site..." and st.button("Load Data"):
+            bid.apply_site_profile(active_sites[choice])
+            st.success(f"Loaded {choice}")
+            st.rerun()
+            
+        st.divider()
+        
+        # Load JSON
+        uploaded = st.file_uploader("Load Saved Bid (.json)", type="json")
+        if uploaded:
+            bid.load_data(json.load(uploaded))
+            st.success("Bid Loaded")
 
-    # 6. Results & 7. Exports (Standard)
+    # --- TABS FOR LAYOUT ---
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "1. Event Info", "2. Site Info", "3. Amenities & Kitchen", "4. Income", "5. Expenses", "6. Report"
+    ])
+
+    # --- TAB 1: EVENT INFO ---
+    with tab1:
+        c1, c2, c3 = st.columns(3)
+        bid.event_name = c1.text_input("Event Name", bid.event_name)
+        bid.event_type = c2.selectbox("Event Type", ["Local", "Kingdom"], index=0 if bid.event_type=="Local" else 1)
+        
+        if bid.event_type == "Kingdom":
+            k_opts = ["Coronation", "Crown List", "Collegium", "Kingdom A&S", "Other"]
+            bid.kingdom_event_type = c3.selectbox("Kingdom Event", k_opts)
+        
+        d1, d2, d3 = st.columns(3)
+        bid.start_date = d1.date_input("Start Date", bid.start_date)
+        bid.end_date = d2.date_input("End Date", bid.end_date)
+        bid.is_single_day = d3.checkbox("Single Day Event?", bid.is_single_day)
+        
+        st.markdown("#### Stewards (Contact info printed, not saved to DB)")
+        c_evt, c_fst = st.columns(2)
+        with c_evt:
+            st.caption("Event Stewards")
+            for i, steward in enumerate(bid.event_stewards):
+                c_name, c_contact = st.columns(2)
+                steward['name'] = c_name.text_input(f"Steward {i+1} Name", steward['name'])
+                steward['contact'] = c_contact.text_input(f"Phone/Email", steward['contact'], key=f"ec{i}")
+                
+        with c_fst:
+            st.caption("Feast Stewards")
+            for i, steward in enumerate(bid.feast_stewards):
+                c_name, c_contact = st.columns(2)
+                steward['name'] = c_name.text_input(f"Feastcrat {i+1} Name", steward['name'])
+                steward['contact'] = c_contact.text_input(f"Phone/Email", steward['contact'], key=f"fc{i}")
+
+    # --- TAB 2: SITE INFO ---
+    with tab2:
+        c1, c2 = st.columns(2)
+        bid.site_name = c1.text_input("Site Name", bid.site_name)
+        bid.site_address = c2.text_input("Site Address", bid.site_address)
+        
+        c3, c4, c5 = st.columns(3)
+        bid.site_contact_name = c3.text_input("Contact Person", bid.site_contact_name)
+        bid.site_contact_info = c4.text_input("Contact Phone/Email", bid.site_contact_info)
+        bid.max_capacity = c5.number_input("Max Capacity", value=bid.max_capacity, step=10)
+
+    # --- TAB 3: AMENITIES ---
+    with tab3:
+        st.subheader("ADA Access")
+        a1, a2, a3, a4 = st.columns(4)
+        if a1.checkbox("Ramps?", bid.ada_ramps):
+            bid.ada_ramps = True
+            bid.ada_ramps_count = a1.number_input("Qty Ramps", bid.ada_ramps_count)
+        else: bid.ada_ramps = False
+            
+        if a2.checkbox("ADA Showers?", bid.ada_showers):
+            bid.ada_showers = True
+            bid.ada_showers_count = a2.number_input("Qty Showers", bid.ada_showers_count)
+        else: bid.ada_showers = False
+            
+        if a3.checkbox("ADA Bathrooms?", bid.ada_bathrooms):
+            bid.ada_bathrooms = True
+            bid.ada_bathrooms_count = a3.number_input("Qty Bathrooms", bid.ada_bathrooms_count)
+        else: bid.ada_bathrooms = False
+            
+        if a4.checkbox("ADA Parking?", bid.ada_parking):
+            bid.ada_parking = True
+            bid.ada_parking_count = a4.number_input("Qty Spaces", bid.ada_parking_count)
+        else: bid.ada_parking = False
+            
+        bid.ada_comment = st.text_area("ADA Access Not Listed / Notes", bid.ada_comment, height=60)
+        
+        st.markdown("---")
+        st.subheader("General Facilities")
+        g1, g2, g3 = st.columns(3)
+        bid.showers_count = g1.number_input("Total Showers", bid.showers_count)
+        bid.bathrooms_count = g2.number_input("Total Bathrooms", bid.bathrooms_count)
+        
+        alco_opts = ["Dry (No)", "Wet (Yes)", "Discreetly Wet (No original containers)"]
+        try: idx = alco_opts.index(f"{bid.alcohol_policy}")
+        except: idx = 0
+        bid.alcohol_policy = g3.selectbox("Alcohol Policy", alco_opts, index=0)
+        if bid.alcohol_policy != "Dry (No)":
+            st.warning("⚠️ Reminder: Ensure you have Alcohol Insurance if required.")
+
+        st.markdown("---")
+        c_camp, c_cabin = st.columns(2)
+        with c_camp:
+            st.markdown("**Camping**")
+            bid.camping_modern = st.checkbox("Modern Tents Allowed", bid.camping_modern)
+            bid.camping_period = st.checkbox("Period Tents Allowed", bid.camping_period)
+            if st.checkbox("Ground Fires Permitted?", bid.ground_fires):
+                bid.ground_fires = True
+                bid.ground_fires_restrictions = st.text_input("Fire Restrictions", bid.ground_fires_restrictions)
+            else: bid.ground_fires = False
+            
+        with c_cabin:
+            st.markdown("**Cabins**")
+            if st.checkbox("Cabins Available?", bid.cabins_available):
+                bid.cabins_available = True
+                cc1, cc2 = st.columns(2)
+                bid.cabins_total_beds = cc1.number_input("Total Beds", bid.cabins_total_beds)
+                bid.cabins_per_cabin = cc2.number_input("Beds per Cabin", bid.cabins_per_cabin)
+                bid.cabins_top_bunks = cc1.number_input("Qty Top Bunks", bid.cabins_top_bunks)
+                bid.cabins_bot_bunks = cc2.number_input("Qty Bottom Bunks", bid.cabins_bot_bunks)
+            else: bid.cabins_available = False
+
+        st.markdown("---")
+        st.subheader("Kitchen")
+        if st.checkbox("Kitchen Access?", bid.kitchen_access):
+            bid.kitchen_access = True
+            k1, k2, k3, k4 = st.columns(4)
+            bid.kitchen_sq_ft = k1.number_input("Sq Footage", bid.kitchen_sq_ft)
+            bid.kitchen_burners = k2.number_input("Burners/Eyes", bid.kitchen_burners)
+            bid.kitchen_sinks = k3.number_input("Sinks", bid.kitchen_sinks)
+            bid.kitchen_prep_tables = k4.number_input("Prep Tables", bid.kitchen_prep_tables)
+            
+            k5, k6, k7, k8 = st.columns(4)
+            bid.kitchen_hobart = k5.checkbox("Hobart Dishwasher", bid.kitchen_hobart)
+            bid.kitchen_warming_table = k6.checkbox("Warming Table", bid.kitchen_warming_table)
+            bid.kitchen_walkin_fridge = k7.checkbox("Walk-In Fridge", bid.kitchen_walkin_fridge)
+            bid.kitchen_walkin_freezer = k8.checkbox("Walk-In Freezer", bid.kitchen_walkin_freezer)
+            
+            k9, k10, k11 = st.columns(3)
+            bid.kitchen_household_fridge_count = k9.number_input("Household Fridges", bid.kitchen_household_fridge_count)
+            bid.kitchen_household_freezer_count = k10.number_input("Household Freezers", bid.kitchen_household_freezer_count)
+            bid.kitchen_ice_maker = k11.checkbox("Ice Maker", bid.kitchen_ice_maker)
+        else: bid.kitchen_access = False
+
+        # Classrooms (Dynamic)
+        st.markdown("---")
+        st.markdown("**Classrooms**")
+        
+        # Helper to manipulate list
+        def add_classroom():
+            bid.classrooms.append({"capacity": 0, "av": False})
+        
+        if st.button("Add Classroom"):
+            add_classroom()
+            
+        if bid.classrooms:
+            for idx, room in enumerate(bid.classrooms):
+                rc1, rc2, rc3 = st.columns([2, 1, 1])
+                room["capacity"] = rc1.number_input(f"Room {idx+1} Capacity", value=int(room["capacity"]), key=f"rcap{idx}")
+                room["av"] = rc2.checkbox(f"A/V Available?", value=room["av"], key=f"rav{idx}")
+                if rc3.button("Remove", key=f"rrem{idx}"):
+                    bid.classrooms.pop(idx)
+                    st.rerun()
+
+    # --- TAB 4: INCOME ---
+    with tab4:
+        st.info("NMS ($10) is automatically added to Non-Member prices below.")
+        
+        c1, c2 = st.columns(2)
+        bid.daytrip_cost = c1.number_input("Daytrip Member Cost", bid.daytrip_cost)
+        c1.metric("Daytrip Non-Member", f"${bid.daytrip_cost + bid.nms_surcharge:.2f}")
+        
+        bid.weekend_cost = c2.number_input("Weekend Member Cost", bid.weekend_cost)
+        c2.metric("Weekend Non-Member", f"${bid.weekend_cost + bid.nms_surcharge:.2f}")
+        
+        st.markdown("---")
+        st.markdown("**Feast (Siloed Income)**")
+        f1, f2, f3 = st.columns(3)
+        bid.feast_cost_per_person = f1.number_input("Feast Cost Per Person", bid.feast_cost_per_person)
+        bid.feast_seats = f2.number_input("Feast Seats Available", bid.feast_seats)
+        feast_budget = bid.feast_cost_per_person * bid.feast_seats
+        f3.metric("Total Feast Budget", f"${feast_budget:.2f}")
+        
+        st.markdown("---")
+        st.markdown("**Cabin Income**")
+        b1, b2, b3, b4 = st.columns(4)
+        # Limits pulled from Amenities tab for reference
+        b1.info(f"Top Bunks Limit: {bid.cabins_top_bunks}")
+        bid.top_bunk_cost = b2.number_input("Cost per Top Bunk", bid.top_bunk_cost)
+        
+        b3.info(f"Bottom Bunk Limit: {bid.cabins_bot_bunks}")
+        bid.bot_bunk_cost = b4.number_input("Cost per Bottom Bunk", bid.bot_bunk_cost)
+
+    # --- TAB 5: EXPENSES ---
+    with tab5:
+        st.markdown("### Site Expenses")
+        s1, s2, s3 = st.columns(3)
+        bid.site_deposit = s1.number_input("Site Deposit", bid.site_deposit)
+        bid.site_deposit_refundable = s2.checkbox("Refundable?", bid.site_deposit_refundable)
+        if bid.site_deposit_refundable:
+            bid.site_deposit_deadline = s3.text_input("Refund Deadline", bid.site_deposit_deadline)
+            
+        bid.site_cost = st.number_input("Site Cost (Minus Deposit)", bid.site_cost)
+        
+        st.markdown("### Operational Budget")
+        # Header
+        h1, h2, h3 = st.columns([2, 1, 1])
+        h1.markdown("**Item**")
+        h2.markdown("**Budgeted**")
+        h3.markdown("**Actual (Post-Event)**")
+        
+        # Standard Items
+        def expense_row(label, budget_attr, actual_attr):
+            c1, c2, c3 = st.columns([2, 1, 1])
+            c1.write(label)
+            val_b = c2.number_input(f"Budget", value=float(getattr(bid, budget_attr)), key=f"b_{budget_attr}", label_visibility="collapsed")
+            val_a = c3.number_input(f"Actual", value=float(getattr(bid, actual_attr)), key=f"a_{actual_attr}", label_visibility="collapsed")
+            setattr(bid, budget_attr, val_b)
+            setattr(bid, actual_attr, val_a)
+
+        expense_row("Tokens", "budget_tokens", "actual_tokens")
+        expense_row("Decorations", "budget_decor", "actual_decor")
+        expense_row("Booklet Printing", "budget_booklet", "actual_booklet")
+        expense_row("Prizes", "budget_prizes", "actual_prizes")
+        
+        st.markdown("### Additional Line Items")
+        # Use Data Editor for dynamic adding/removing
+        # Convert list of dicts to dataframe
+        df_expenses = pd.DataFrame(bid.additional_expenses)
+        if df_expenses.empty:
+            df_expenses = pd.DataFrame(columns=["Item", "Budget", "Actual"])
+        
+        edited_df = st.data_editor(df_expenses, num_rows="dynamic", use_container_width=True)
+        
+        # Sync back to bid object
+        bid.additional_expenses = edited_df.to_dict('records')
+
+    # --- TAB 6: REPORT ---
+    with tab6:
+        st.subheader("Financial Projection & Report")
+        
+        # Inputs for Projection
+        c1, c2, c3, c4 = st.columns(4)
+        bid.proj_attendees = c1.number_input("Proj. Attendees", bid.proj_attendees)
+        bid.proj_feast_sold = c2.number_input("Proj. Feast Sold", bid.proj_feast_sold)
+        bid.proj_top_sold = c3.number_input("Proj. Top Bunks", bid.proj_top_sold)
+        bid.proj_bot_sold = c4.number_input("Proj. Bottom Bunks", bid.proj_bot_sold)
+        
+        fin = bid.calculate_financials()
+        
+        r1, r2 = st.columns(2)
+        r1.metric("Total Revenue", f"${fin['total_revenue']:.2f}")
+        
+        # Display Budget vs Actual
+        st.markdown("#### Profit / Loss")
+        pl1, pl2 = st.columns(2)
+        pl1.metric("Projected Profit (Budget)", f"${fin['net_profit_budget']:.2f}")
+        
+        # Only show actuals if there's actual spend
+        if fin['total_actual_expense'] > bid.site_cost: # Assuming site cost is baseline
+            pl2.metric("Actual Profit (Post-Event)", f"${fin['net_profit_actual']:.2f}", 
+                       delta=f"{fin['net_profit_actual'] - fin['net_profit_budget']:.2f} vs Budget")
+        else:
+            pl2.info("Enter Actuals in Expenses tab to see final report.")
+
+        if bid.event_type == "Kingdom":
+            st.markdown("#### Kingdom Split (50/50)")
+            k1, k2 = st.columns(2)
+            k1.metric("Group Share", f"${fin['group_share']:.2f}")
+            k2.metric("Kingdom Share", f"${fin['kingdom_share']:.2f}")
+
+    # --- EXPORTS & SAVE ---
     st.markdown("---")
-    st.subheader("📊 Projections")
-    p1, p2, p3 = st.columns(3)
-    proj_wk = p1.number_input("Proj. Weekend Heads", value=100, step=10)
-    proj_dt = p2.number_input("Proj. Daytrip Heads", value=20, step=5)
-    proj_fst = p3.number_input("Proj. Feast Eaters", value=50, step=5)
-    p4, p5 = st.columns(2)
-    sold_top = p4.number_input(f"Proj. Top Beds Sold (Max {bid.beds_top_qty})", value=0, max_value=max(0, bid.beds_top_qty), step=1)
-    sold_bot = p5.number_input(f"Proj. Bot Beds Sold (Max {bid.beds_bot_qty})", value=0, max_value=max(0, bid.beds_bot_qty), step=1)
-    
-    results = bid.calculate_projection(proj_wk, proj_dt, proj_fst, sold_top, sold_bot)
-    
-    if results['target_be_price'] > 0:
-        st.info(f"💡 **Target Price:** To exactly break even with {results['total_attendees']} attendees, your Member Ticket Price must be at least: **${results['target_be_price']:.2f}**")
-
-    r1, r2, r3 = st.columns(3)
-    r1.metric("Net Profit", f"${results['total_net']:.2f}")
-    r2.metric("Break Even (Gate)", results['break_even'])
-    r3.metric("Total Expenses", f"${results['total_expense']:.2f}")
-    
-    with st.expander("Detailed Financial Breakdown"):
-        st.json(results)
-
-    st.markdown("---")
-    st.subheader("💾 Save & Submit")
+    st.subheader("💾 Actions")
     ex1, ex2, ex3 = st.columns(3)
-    pdf_bytes = export_to_pdf(bid, results)
+    
+    # PDF
+    pdf_bytes = create_pdf(bid, fin)
     ex1.download_button("Download PDF Report", pdf_bytes, "bid_report.pdf", "application/pdf")
+    
+    # JSON
     json_str = json.dumps(bid.to_dict(), indent=4)
-    ex2.download_button("Download Save File (.json)", json_str, "bid_save.json", "application/json")
-    flat_data = bid.__dict__.copy()
-    if "expenses" in flat_data: del flat_data["expenses"] 
-    df = pd.DataFrame([flat_data])
-    csv = df.to_csv(index=False).encode('utf-8')
-    ex3.download_button("Download CSV (For Sheets)", csv, "bid_spreadsheet.csv", "text/csv")
+    ex2.download_button("Save Bid File (.json)", json_str, "bid_save.json", "application/json")
+    
+    # CSV
+    flat = bid.__dict__.copy()
+    if "classrooms" in flat: flat["classrooms"] = str(flat["classrooms"]) # Flatten lists
+    if "event_stewards" in flat: flat["event_stewards"] = str(flat["event_stewards"])
+    if "feast_stewards" in flat: flat["feast_stewards"] = str(flat["feast_stewards"])
+    if "additional_expenses" in flat: flat["additional_expenses"] = str(flat["additional_expenses"])
+    if "kitchen_amenities" in flat: del flat["kitchen_amenities"]
+    if "expenses" in flat: del flat["expenses"]
+    
+    df_ex = pd.DataFrame([flat])
+    csv = df_ex.to_csv(index=False).encode('utf-8')
+    ex3.download_button("Export CSV", csv, "bid_data.csv", "text/csv")
 
-    # ==========================================
-    # ADMIN SECTIONS
-    # ==========================================
+    # --- ADMIN DB ---
     if st.session_state.is_admin:
         st.markdown("---")
-        st.header("👑 Admin Controls")
-        st.info("You are in Admin Mode. You can Save, Archive, and Delete sites.")
-
-        with st.expander("☁️ Save/Update Current Site", expanded=True):
-            db_key_name = st.text_input("Site Name to Save As (Unique)", bid.site_name)
-            if st.button("Save Site to Database"):
-                if not db_key_name.strip():
-                    st.error("⚠️ Site Name required.")
-                else:
-                    if save_site_to_db(db_key_name, bid):
-                        st.success(f"Saved '{db_key_name}'!")
-                        st.cache_data.clear()
-                        st.rerun()
-
-        with st.expander("🗑️ Manage Existing Sites"):
+        with st.expander("☁️ Admin: Database Save"):
+            db_name = st.text_input("Save Site As:", bid.site_name)
+            if st.button("Save Site to DB"):
+                if save_site_to_db(db_name, bid):
+                    st.success("Site Saved!")
+                    st.cache_data.clear()
+        
+        with st.expander("🗑️ Admin: Manage Sites"):
+            # Load ALL (including archived)
             all_sites = load_sites_from_db(include_archived=True)
-            if not all_sites:
-                st.write("No sites to manage.")
-            else:
-                manage_choice = st.selectbox("Select Site to Manage", list(all_sites.keys()))
-                selected_data = all_sites[manage_choice]
+            if all_sites:
+                m_choice = st.selectbox("Manage Site", list(all_sites.keys()))
+                s_data = all_sites[m_choice]
+                is_arch = s_data.get("archived", False)
+                st.write(f"Status: {'🔴 Archived' if is_arch else '🟢 Active'}")
                 
-                is_archived = selected_data.get("archived", False)
-                status_text = "🔴 ARCHIVED (Hidden)" if is_archived else "🟢 ACTIVE (Visible)"
-                st.markdown(f"**Current Status:** {status_text}")
-                
-                mc1, mc2 = st.columns(2)
-                btn_label = "Un-Archive (Make Visible)" if is_archived else "Archive (Hide Site)"
-                
-                if mc1.button(btn_label):
-                    if toggle_archive_status(manage_choice, selected_data, archive=not is_archived):
-                        st.success("Status updated.")
+                b1, b2 = st.columns(2)
+                if b1.button("Toggle Archive"):
+                    if toggle_archive_status(m_choice, s_data, not is_arch):
+                        st.success("Updated")
                         st.cache_data.clear()
                         st.rerun()
-                
-                if mc2.button("❌ DELETE PERMANENTLY"):
-                    if delete_site_permanently(manage_choice):
-                        st.success("Deleted.")
+                if b2.button("DELETE PERMANENTLY"):
+                    if delete_site_permanently(m_choice):
+                        st.success("Deleted")
                         st.cache_data.clear()
                         st.rerun()
 
