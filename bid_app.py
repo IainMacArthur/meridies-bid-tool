@@ -11,7 +11,7 @@ import pandas as pd
 # ReportLab imports for PDF generation
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib import colors
 
 # ==========================================
@@ -475,7 +475,16 @@ def main():
         # Type Selection
         bid.event_type = c3.selectbox("Event Type", ["Local", "Kingdom"], index=0 if bid.event_type=="Local" else 1)
         if bid.event_type == "Kingdom":
-            k_opts = ["Coronation", "Crown List", "Collegium", "Kingdom A&S", "Other"]
+            k_opts = [
+                "Fighters Collegium/War College",
+                "Meridian Challenge of Arms",
+                "Spring Coronation",
+                "Spring Crown List/Kingdom A&S",
+                "Royal University of Meridies",
+                "Meridian Grand Tournament",
+                "Fall Coronation",
+                "Fall Crown List"
+            ]
             try: idx = k_opts.index(bid.kingdom_event_type) if bid.kingdom_event_type in k_opts else 0
             except: idx = 0
             bid.kingdom_event_type = st.selectbox("Kingdom Event", k_opts, index=idx)
