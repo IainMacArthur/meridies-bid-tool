@@ -11,7 +11,7 @@ import pandas as pd
 # ReportLab imports for PDF generation
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib import colors
 
 # ==========================================
@@ -70,7 +70,7 @@ def save_site_to_db(site_name, bid_object):
         "cabins_total_beds", "cabins_top_bunks", "cabins_bot_bunks", "cabins_per_cabin",
         "classrooms", "fighting_indoors", "fighting_outdoors", "equestrian_area", "parking_comment",
         "feast_hall_indoor", "feast_pavilion_outdoor",
-        "kitchen_access", "kitchen_sq_ft", "kitchen_burners", "kitchen_sinks", "kitchen_prep_tables",
+        "kitchen_access", "kitchen_sq_ft", "kitchen_burners", "kitchen_ovens", "kitchen_sinks", "kitchen_prep_tables",
         "kitchen_hobart", "kitchen_warming_table", "kitchen_walkin_fridge", "kitchen_walkin_freezer",
         "kitchen_household_fridge_count", "kitchen_household_freezer_count", "kitchen_ice_maker",
         "site_cost", "site_deposit_refundable", "top_bunk_cost", "bot_bunk_cost"
@@ -128,6 +128,7 @@ def delete_site_permanently(site_name):
 @dataclass
 class EventBid:
     # --- EVENT HEADER ---
+    group_name: str = ""
     event_name: str = ""
     event_type: str = "Local" # Kingdom or Local
     kingdom_event_type: str = "" # specific dropdown if Kingdom
@@ -135,8 +136,13 @@ class EventBid:
     end_date: date = date.today()
     is_single_day: bool = False
     
-    # Stewards (Names + Private Contact Info)
-    # Stored as list of dicts: [{"name": "...", "contact": "..."}]
+    # Staff (Names + Private Contact Info)
+    # Stored as list of dicts or strings
+    group_seneschal_name: str = ""
+    group_seneschal_contact: str = ""
+    reservationist_name: str = ""
+    reservationist_contact: str = ""
+    
     event_stewards: List[Dict] = field(default_factory=lambda: [{"name": "", "contact": ""} for _ in range(2)])
     feast_stewards: List[Dict] = field(default_factory=lambda: [{"name": "", "contact": ""} for _ in range(2)])
 
@@ -191,6 +197,7 @@ class EventBid:
     kitchen_access: bool = False
     kitchen_sq_ft: int = 0
     kitchen_burners: int = 0
+    kitchen_ovens: int = 0
     kitchen_sinks: int = 0
     kitchen_prep_tables: int = 0
     kitchen_hobart: bool = False
@@ -261,44 +268,24 @@ class EventBid:
 
     def calculate_financials(self):
         # 1. EXPENSES
-        # Fixed
         total_budget_expense = self.site_cost + self.budget_tokens + self.budget_decor + self.budget_booklet + self.budget_prizes
         total_actual_expense = self.site_cost + self.actual_tokens + self.actual_decor + self.actual_booklet + self.actual_prizes
         
-        # Add dynamic lines
         for line in self.additional_expenses:
             total_budget_expense += float(line.get("budget", 0.0))
             total_actual_expense += float(line.get("actual", 0.0))
             
-        # Add Feast (Siloed Expense)
         feast_budget_expense = self.feast_cost_per_person * self.proj_feast_sold
-        # Note: We assume actual feast expense matches projection for the budget tool unless tracked elsewhere
-        # Ideally, you'd have an "Actual Feast Cost" field, but for now we use the calculated one
         
         # 2. INCOME
-        # Gate (Excluding NMS)
-        gate_income = (self.weekend_cost * self.proj_attendees) # Simplified: Assuming all are weekend for general projection
-        
-        # Feast Income
-        feast_income = self.feast_cost_per_person * self.proj_feast_sold # Note: Ticket price usually covers food cost. 
-        # Wait, usually Ticket Price > Food Cost. 
-        # Correct logic: Feast Budget (Expense) is siloed. Feast Revenue is siloed.
-        
-        # Lodging Income
+        gate_income = (self.weekend_cost * self.proj_attendees)
         lodging_income = (self.top_bunk_cost * self.proj_top_sold) + (self.bot_bunk_cost * self.proj_bot_sold)
         
-        # 3. TOTALS
-        # Total Revenue (Gate + Lodging). Feast is usually wash or slight profit, handled separately? 
-        # Let's add Feast Revenue to Total Revenue for simplicity.
-        
-        total_revenue = gate_income + lodging_income # + Feast Revenue if ticket price exists?
-        # In this model, "Feast Cost per person" usually means the budget allocated. 
-        # Often Feast Ticket Price == Feast Cost Per Person (Break even feast).
+        total_revenue = gate_income + lodging_income 
         
         net_profit_budget = total_revenue - (total_budget_expense + feast_budget_expense)
         net_profit_actual = total_revenue - (total_actual_expense + feast_budget_expense) 
         
-        # Splits
         kingdom_share = 0.0
         group_share = 0.0
         
@@ -311,7 +298,7 @@ class EventBid:
         return {
             "total_budget_expense": total_budget_expense + feast_budget_expense,
             "total_actual_expense": total_actual_expense + feast_budget_expense,
-            "total_revenue": total_revenue + feast_budget_expense, # Assuming rev = cost for feast
+            "total_revenue": total_revenue + feast_budget_expense, 
             "net_profit_budget": net_profit_budget,
             "net_profit_actual": net_profit_actual,
             "kingdom_share": kingdom_share,
@@ -334,17 +321,26 @@ def create_pdf(bid: EventBid, financials: dict):
     
     # Event Info
     elements.append(Paragraph(f"<b>Event:</b> {bid.event_name}", styles['Normal']))
+    elements.append(Paragraph(f"<b>Group:</b> {bid.group_name}", styles['Normal']))
     elements.append(Paragraph(f"<b>Date:</b> {bid.start_date} to {bid.end_date}", styles['Normal']))
     elements.append(Paragraph(f"<b>Type:</b> {bid.event_type} ({bid.kingdom_event_type if bid.event_type=='Kingdom' else ''})", styles['Normal']))
     elements.append(Spacer(1, 12))
     
-    # Stewards
-    elements.append(Paragraph("<b>Event Stewards:</b>", styles['Heading3']))
+    # Stewards & Staff
+    elements.append(Paragraph("<b>Event Staff:</b>", styles['Heading3']))
+    
+    if bid.group_seneschal_name:
+        elements.append(Paragraph(f"Seneschal: {bid.group_seneschal_name} - {bid.group_seneschal_contact}", styles['Normal']))
+    if bid.reservationist_name:
+        elements.append(Paragraph(f"Reservationist: {bid.reservationist_name} - {bid.reservationist_contact}", styles['Normal']))
+    
+    elements.append(Spacer(1, 6))
+    elements.append(Paragraph("<b>Event Stewards:</b>", styles['Heading4']))
     for s in bid.event_stewards:
         if s['name']: elements.append(Paragraph(f"{s['name']} - {s['contact']}", styles['Normal']))
         
     elements.append(Spacer(1, 6))
-    elements.append(Paragraph("<b>Feast Stewards:</b>", styles['Heading3']))
+    elements.append(Paragraph("<b>Feast Stewards:</b>", styles['Heading4']))
     for s in bid.feast_stewards:
         if s['name']: elements.append(Paragraph(f"{s['name']} - {s['contact']}", styles['Normal']))
         
@@ -372,6 +368,10 @@ def create_pdf(bid: EventBid, financials: dict):
         
     elements.append(Spacer(1, 12))
     
+    if bid.kitchen_access:
+        elements.append(Paragraph(f"<b>Kitchen:</b> {bid.kitchen_burners} Burners, {bid.kitchen_ovens} Ovens, {bid.kitchen_sinks} Sinks", styles['Normal']))
+        elements.append(Spacer(1, 12))
+
     # Financials
     elements.append(Paragraph("<b>Financial Summary</b>", styles['Heading3']))
     data = [
@@ -404,15 +404,18 @@ def main():
     if "is_admin" not in st.session_state: st.session_state.is_admin = False
     bid = st.session_state.bid
 
-    # Header
-    col1, col2 = st.columns([1, 6])
-    with col1: st.image(KINGDOM_LOGO_URL, width=80)
-    with col2: 
-        st.title("Kingdom of Meridies Event Bid Tool")
-        st.caption("Budgeting, Site Database, and Reporting System")
-
     # --- SIDEBAR ---
     with st.sidebar:
+        # DB Status Indicator
+        conn_check = get_db_connection()
+        if conn_check:
+            st.success("🟢 Database Online")
+            conn_check.close()
+        else:
+            st.error("🔴 Database Offline")
+            
+        st.divider()
+
         # Admin Login
         if not st.session_state.is_admin:
             with st.expander("🔐 Admin Access"):
@@ -450,6 +453,13 @@ def main():
             bid.load_data(json.load(uploaded))
             st.success("Bid Loaded")
 
+    # --- HEADER ---
+    col1, col2 = st.columns([1, 6])
+    with col1: st.image(KINGDOM_LOGO_URL, width=80)
+    with col2: 
+        st.title("Kingdom of Meridies Event Bid Tool")
+        st.caption("Budgeting, Site Database, and Reporting System")
+
     # --- TABS FOR LAYOUT ---
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "1. Event Info", "2. Site Info", "3. Amenities & Kitchen", "4. Income", "5. Expenses", "6. Report"
@@ -457,30 +467,52 @@ def main():
 
     # --- TAB 1: EVENT INFO ---
     with tab1:
+        st.subheader("Event Basics")
         c1, c2, c3 = st.columns(3)
-        bid.event_name = c1.text_input("Event Name", bid.event_name)
-        bid.event_type = c2.selectbox("Event Type", ["Local", "Kingdom"], index=0 if bid.event_type=="Local" else 1)
+        bid.group_name = c1.text_input("Group Name", bid.group_name)
+        bid.event_name = c2.text_input("Event Name", bid.event_name)
         
+        # Type Selection
+        bid.event_type = c3.selectbox("Event Type", ["Local", "Kingdom"], index=0 if bid.event_type=="Local" else 1)
         if bid.event_type == "Kingdom":
             k_opts = ["Coronation", "Crown List", "Collegium", "Kingdom A&S", "Other"]
-            bid.kingdom_event_type = c3.selectbox("Kingdom Event", k_opts)
+            try: idx = k_opts.index(bid.kingdom_event_type) if bid.kingdom_event_type in k_opts else 0
+            except: idx = 0
+            bid.kingdom_event_type = st.selectbox("Kingdom Event", k_opts, index=idx)
         
         d1, d2, d3 = st.columns(3)
         bid.start_date = d1.date_input("Start Date", bid.start_date)
         bid.end_date = d2.date_input("End Date", bid.end_date)
         bid.is_single_day = d3.checkbox("Single Day Event?", bid.is_single_day)
         
-        st.markdown("#### Stewards (Contact info printed, not saved to DB)")
+        st.markdown("---")
+        st.subheader("Event Staff")
+        st.caption("Note: Contact info is included in the PDF report but NOT saved to the public database.")
+        
+        # Group Officers
+        go1, go2 = st.columns(2)
+        with go1:
+            st.markdown("**Group Seneschal**")
+            bid.group_seneschal_name = st.text_input("Seneschal Name", bid.group_seneschal_name)
+            bid.group_seneschal_contact = st.text_input("Phone/Email", bid.group_seneschal_contact, key="gs_contact")
+        with go2:
+            st.markdown("**Reservationist**")
+            bid.reservationist_name = st.text_input("Reservationist Name", bid.reservationist_name)
+            bid.reservationist_contact = st.text_input("Phone/Email", bid.reservationist_contact, key="res_contact")
+
+        st.markdown("---")
+        
+        # Stewards
         c_evt, c_fst = st.columns(2)
         with c_evt:
-            st.caption("Event Stewards")
+            st.markdown("**Event Stewards**")
             for i, steward in enumerate(bid.event_stewards):
                 c_name, c_contact = st.columns(2)
                 steward['name'] = c_name.text_input(f"Steward {i+1} Name", steward['name'])
                 steward['contact'] = c_contact.text_input(f"Phone/Email", steward['contact'], key=f"ec{i}")
                 
         with c_fst:
-            st.caption("Feast Stewards")
+            st.markdown("**Feast Stewards**")
             for i, steward in enumerate(bid.feast_stewards):
                 c_name, c_contact = st.columns(2)
                 steward['name'] = c_name.text_input(f"Feastcrat {i+1} Name", steward['name'])
@@ -488,14 +520,15 @@ def main():
 
     # --- TAB 2: SITE INFO ---
     with tab2:
+        st.subheader("Site Contact & Basics")
         c1, c2 = st.columns(2)
         bid.site_name = c1.text_input("Site Name", bid.site_name)
         bid.site_address = c2.text_input("Site Address", bid.site_address)
         
         c3, c4, c5 = st.columns(3)
-        bid.site_contact_name = c3.text_input("Contact Person", bid.site_contact_name)
-        bid.site_contact_info = c4.text_input("Contact Phone/Email", bid.site_contact_info)
-        bid.max_capacity = c5.number_input("Max Capacity", value=bid.max_capacity, step=10)
+        bid.site_contact_name = c3.text_input("Site Contact Person", bid.site_contact_name)
+        bid.site_contact_info = c4.text_input("Site Phone/Email", bid.site_contact_info)
+        bid.max_capacity = c5.number_input("Max Site Capacity", value=bid.max_capacity, step=10)
 
     # --- TAB 3: AMENITIES ---
     with tab3:
@@ -565,8 +598,11 @@ def main():
             k1, k2, k3, k4 = st.columns(4)
             bid.kitchen_sq_ft = k1.number_input("Sq Footage", bid.kitchen_sq_ft)
             bid.kitchen_burners = k2.number_input("Burners/Eyes", bid.kitchen_burners)
-            bid.kitchen_sinks = k3.number_input("Sinks", bid.kitchen_sinks)
-            bid.kitchen_prep_tables = k4.number_input("Prep Tables", bid.kitchen_prep_tables)
+            bid.kitchen_ovens = k3.number_input("Ovens", bid.kitchen_ovens)
+            bid.kitchen_sinks = k4.number_input("Sinks", bid.kitchen_sinks)
+            
+            k_row2_1, k_row2_2 = st.columns(2)
+            bid.kitchen_prep_tables = k_row2_1.number_input("Prep Tables", bid.kitchen_prep_tables)
             
             k5, k6, k7, k8 = st.columns(4)
             bid.kitchen_hobart = k5.checkbox("Hobart Dishwasher", bid.kitchen_hobart)
@@ -583,14 +619,10 @@ def main():
         # Classrooms (Dynamic)
         st.markdown("---")
         st.markdown("**Classrooms**")
-        
-        # Helper to manipulate list
         def add_classroom():
             bid.classrooms.append({"capacity": 0, "av": False})
-        
         if st.button("Add Classroom"):
             add_classroom()
-            
         if bid.classrooms:
             for idx, room in enumerate(bid.classrooms):
                 rc1, rc2, rc3 = st.columns([2, 1, 1])
@@ -603,11 +635,9 @@ def main():
     # --- TAB 4: INCOME ---
     with tab4:
         st.info("NMS ($10) is automatically added to Non-Member prices below.")
-        
         c1, c2 = st.columns(2)
         bid.daytrip_cost = c1.number_input("Daytrip Member Cost", bid.daytrip_cost)
         c1.metric("Daytrip Non-Member", f"${bid.daytrip_cost + bid.nms_surcharge:.2f}")
-        
         bid.weekend_cost = c2.number_input("Weekend Member Cost", bid.weekend_cost)
         c2.metric("Weekend Non-Member", f"${bid.weekend_cost + bid.nms_surcharge:.2f}")
         
@@ -622,10 +652,8 @@ def main():
         st.markdown("---")
         st.markdown("**Cabin Income**")
         b1, b2, b3, b4 = st.columns(4)
-        # Limits pulled from Amenities tab for reference
         b1.info(f"Top Bunks Limit: {bid.cabins_top_bunks}")
         bid.top_bunk_cost = b2.number_input("Cost per Top Bunk", bid.top_bunk_cost)
-        
         b3.info(f"Bottom Bunk Limit: {bid.cabins_bot_bunks}")
         bid.bot_bunk_cost = b4.number_input("Cost per Bottom Bunk", bid.bot_bunk_cost)
 
@@ -637,17 +665,14 @@ def main():
         bid.site_deposit_refundable = s2.checkbox("Refundable?", bid.site_deposit_refundable)
         if bid.site_deposit_refundable:
             bid.site_deposit_deadline = s3.text_input("Refund Deadline", bid.site_deposit_deadline)
-            
         bid.site_cost = st.number_input("Site Cost (Minus Deposit)", bid.site_cost)
         
         st.markdown("### Operational Budget")
-        # Header
         h1, h2, h3 = st.columns([2, 1, 1])
         h1.markdown("**Item**")
         h2.markdown("**Budgeted**")
         h3.markdown("**Actual (Post-Event)**")
         
-        # Standard Items
         def expense_row(label, budget_attr, actual_attr):
             c1, c2, c3 = st.columns([2, 1, 1])
             c1.write(label)
@@ -662,22 +687,15 @@ def main():
         expense_row("Prizes", "budget_prizes", "actual_prizes")
         
         st.markdown("### Additional Line Items")
-        # Use Data Editor for dynamic adding/removing
-        # Convert list of dicts to dataframe
         df_expenses = pd.DataFrame(bid.additional_expenses)
         if df_expenses.empty:
             df_expenses = pd.DataFrame(columns=["Item", "Budget", "Actual"])
-        
         edited_df = st.data_editor(df_expenses, num_rows="dynamic", use_container_width=True)
-        
-        # Sync back to bid object
         bid.additional_expenses = edited_df.to_dict('records')
 
     # --- TAB 6: REPORT ---
     with tab6:
         st.subheader("Financial Projection & Report")
-        
-        # Inputs for Projection
         c1, c2, c3, c4 = st.columns(4)
         bid.proj_attendees = c1.number_input("Proj. Attendees", bid.proj_attendees)
         bid.proj_feast_sold = c2.number_input("Proj. Feast Sold", bid.proj_feast_sold)
@@ -688,18 +706,11 @@ def main():
         
         r1, r2 = st.columns(2)
         r1.metric("Total Revenue", f"${fin['total_revenue']:.2f}")
-        
-        # Display Budget vs Actual
-        st.markdown("#### Profit / Loss")
-        pl1, pl2 = st.columns(2)
-        pl1.metric("Projected Profit (Budget)", f"${fin['net_profit_budget']:.2f}")
-        
-        # Only show actuals if there's actual spend
-        if fin['total_actual_expense'] > bid.site_cost: # Assuming site cost is baseline
-            pl2.metric("Actual Profit (Post-Event)", f"${fin['net_profit_actual']:.2f}", 
+        if fin['total_actual_expense'] > bid.site_cost:
+            r2.metric("Actual Profit (Post-Event)", f"${fin['net_profit_actual']:.2f}", 
                        delta=f"{fin['net_profit_actual'] - fin['net_profit_budget']:.2f} vs Budget")
         else:
-            pl2.info("Enter Actuals in Expenses tab to see final report.")
+            r2.metric("Projected Profit (Budget)", f"${fin['net_profit_budget']:.2f}")
 
         if bid.event_type == "Kingdom":
             st.markdown("#### Kingdom Split (50/50)")
@@ -711,24 +722,17 @@ def main():
     st.markdown("---")
     st.subheader("💾 Actions")
     ex1, ex2, ex3 = st.columns(3)
-    
-    # PDF
     pdf_bytes = create_pdf(bid, fin)
     ex1.download_button("Download PDF Report", pdf_bytes, "bid_report.pdf", "application/pdf")
-    
-    # JSON
     json_str = json.dumps(bid.to_dict(), indent=4)
     ex2.download_button("Save Bid File (.json)", json_str, "bid_save.json", "application/json")
-    
-    # CSV
     flat = bid.__dict__.copy()
-    if "classrooms" in flat: flat["classrooms"] = str(flat["classrooms"]) # Flatten lists
+    if "classrooms" in flat: flat["classrooms"] = str(flat["classrooms"]) 
     if "event_stewards" in flat: flat["event_stewards"] = str(flat["event_stewards"])
     if "feast_stewards" in flat: flat["feast_stewards"] = str(flat["feast_stewards"])
     if "additional_expenses" in flat: flat["additional_expenses"] = str(flat["additional_expenses"])
     if "kitchen_amenities" in flat: del flat["kitchen_amenities"]
     if "expenses" in flat: del flat["expenses"]
-    
     df_ex = pd.DataFrame([flat])
     csv = df_ex.to_csv(index=False).encode('utf-8')
     ex3.download_button("Export CSV", csv, "bid_data.csv", "text/csv")
@@ -744,14 +748,12 @@ def main():
                     st.cache_data.clear()
         
         with st.expander("🗑️ Admin: Manage Sites"):
-            # Load ALL (including archived)
             all_sites = load_sites_from_db(include_archived=True)
             if all_sites:
                 m_choice = st.selectbox("Manage Site", list(all_sites.keys()))
                 s_data = all_sites[m_choice]
                 is_arch = s_data.get("archived", False)
                 st.write(f"Status: {'🔴 Archived' if is_arch else '🟢 Active'}")
-                
                 b1, b2 = st.columns(2)
                 if b1.button("Toggle Archive"):
                     if toggle_archive_status(m_choice, s_data, not is_arch):
