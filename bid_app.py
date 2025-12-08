@@ -66,7 +66,6 @@ def save_site_to_db(site_name, bid_object):
     
     cursor = conn.cursor()
     data_dict = bid_object.to_dict()
-    # Ensure archived status is preserved or defaults to False
     data_dict["archived"] = False 
     
     json_str = json.dumps(data_dict)
@@ -267,7 +266,7 @@ class EventBid:
         }
 
 # ==========================================
-# PDF GENERATION
+# PDF GENERATION LOGIC
 # ==========================================
 def export_to_pdf(bid: EventBid, projection: dict):
     buffer = io.BytesIO()
@@ -323,6 +322,24 @@ def export_to_pdf(bid: EventBid, projection: dict):
     ]))
     elements.append(t)
     
+    # Add Expense Breakdown to PDF as well
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph("<b>Operational Expenses</b>", styles["Heading3"]))
+    
+    exp_data = [["Item", "Projected Cost"]]
+    for item, val in bid.expenses.items():
+        exp_data.append([item, f"${val['projected']:.2f}"])
+    
+    if len(exp_data) > 1:
+        t_exp = Table(exp_data, colWidths=[250, 100])
+        t_exp.setStyle(TableStyle([
+            ('GRID', (0,0), (-1,-1), 1, colors.black),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ]))
+        elements.append(t_exp)
+    else:
+        elements.append(Paragraph("No operational expenses listed.", styles["Normal"]))
+
     doc.build(elements)
     buffer.seek(0)
     return buffer
@@ -371,11 +388,9 @@ def main():
         st.header("📂 Database")
         
         # Load Sites logic (Always visible)
-        # Admins see ALL sites (including archived), Public sees only Active
         available_sites = load_sites_from_db(include_archived=st.session_state.is_admin)
         
         if not available_sites:
-            # Fallback if DB offline
             available_sites = {"Select a Site...": None}
             if get_db_connection():
                 st.info("Database empty.")
@@ -403,7 +418,6 @@ def main():
     c1, c2 = st.columns(2)
     bid.event_name = c1.text_input("Event Name", bid.event_name)
     bid.event_type = c2.selectbox("Type", ["Local", "Kingdom"], index=0 if bid.event_type=="Local" else 1)
-    
     d1, d2, d3 = st.columns(3)
     bid.start_date = d1.date_input("Start Date", bid.start_date)
     bid.end_date = d2.date_input("End Date", bid.end_date)
@@ -470,17 +484,37 @@ def main():
     bid.beds_bot_qty = b3.number_input("Qty: Bottom Bunks", value=int(bid.beds_bot_qty), step=1)
     bid.beds_bot_price = b4.number_input("Price: Bottom ($)", value=float(bid.beds_bot_price), min_value=0.0, step=1.0)
 
+    # 5. EXPENSES SECTION (FIXED)
     st.markdown("---")
     st.subheader("5. Operational Expenses")
-    e_col1, e_col2, e_col3 = st.columns([2, 1, 1])
-    new_exp_name = e_col1.text_input("New Expense Item")
-    new_exp_cost = e_col2.number_input("Cost", 0.0, step=10.0)
-    if e_col3.button("Add"):
-        if new_exp_name:
-            bid.expenses[new_exp_name] = {"projected": new_exp_cost, "actual": 0.0}
-    if bid.expenses:
-        st.write(bid.expenses)
+    
+    # Callback function to add item and clear inputs
+    def add_expense_callback():
+        # Get values from session state
+        name = st.session_state["new_exp_name_input"]
+        cost = st.session_state["new_exp_cost_input"]
+        
+        if name:
+            # Add to bid object
+            st.session_state.bid.expenses[name] = {"projected": cost, "actual": 0.0}
+            # Clear inputs by resetting session state keys
+            st.session_state["new_exp_name_input"] = ""
+            st.session_state["new_exp_cost_input"] = 0.0
 
+    # Input columns
+    e_col1, e_col2, e_col3 = st.columns([2, 1, 1])
+    e_col1.text_input("New Expense Item", key="new_exp_name_input")
+    e_col2.number_input("Cost", min_value=0.0, step=10.0, key="new_exp_cost_input")
+    e_col3.button("Add Expense", on_click=add_expense_callback)
+
+    # Display List
+    if bid.expenses:
+        st.markdown("##### Current Budget Items:")
+        # Convert to DataFrame for cleaner display
+        exp_list = [{"Item": k, "Projected Cost": f"${v['projected']:.2f}"} for k, v in bid.expenses.items()]
+        st.dataframe(pd.DataFrame(exp_list), use_container_width=True, hide_index=True)
+
+    # 6. Results & 7. Exports (Standard)
     st.markdown("---")
     st.subheader("📊 Projections")
     p1, p2, p3 = st.columns(3)
@@ -518,14 +552,13 @@ def main():
     ex3.download_button("Download CSV (For Sheets)", csv, "bid_spreadsheet.csv", "text/csv")
 
     # ==========================================
-    # ADMIN SECTIONS (HIDDEN UNLESS LOGGED IN)
+    # ADMIN SECTIONS
     # ==========================================
     if st.session_state.is_admin:
         st.markdown("---")
         st.header("👑 Admin Controls")
         st.info("You are in Admin Mode. You can Save, Archive, and Delete sites.")
 
-        # 1. SAVE/UPDATE
         with st.expander("☁️ Save/Update Current Site", expanded=True):
             db_key_name = st.text_input("Site Name to Save As (Unique)", bid.site_name)
             if st.button("Save Site to Database"):
@@ -537,9 +570,7 @@ def main():
                         st.cache_data.clear()
                         st.rerun()
 
-        # 2. MANAGE (ARCHIVE/DELETE)
         with st.expander("🗑️ Manage Existing Sites"):
-            # Load ALL sites (including archived)
             all_sites = load_sites_from_db(include_archived=True)
             if not all_sites:
                 st.write("No sites to manage.")
