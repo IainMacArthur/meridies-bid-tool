@@ -22,17 +22,6 @@ KINGDOM_LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQMZ0z9
 # ==========================================
 # MYSQL DATABASE FUNCTIONS
 # ==========================================
-"""def get_db_connection():
-    try:
-        return mysql.connector.connect(
-            host=st.secrets["mysql"]["host"],
-            user=st.secrets["mysql"]["user"],
-            password=st.secrets["mysql"]["password"],
-            database=st.secrets["mysql"]["database"],
-            port=st.secrets["mysql"]["port"]
-        )
-    except Exception:
-        return None"""
 def get_db_connection():
     try:
         return mysql.connector.connect(
@@ -42,9 +31,9 @@ def get_db_connection():
             database=st.secrets["mysql"]["database"],
             port=st.secrets["mysql"]["port"]
         )
-    except Exception as e:
-        st.error(f"DB Connection Error: {str(e)}")  # This will show you the real error
+    except Exception:
         return None
+
         
 def load_sites_from_db(include_archived=False):
     conn = get_db_connection()
